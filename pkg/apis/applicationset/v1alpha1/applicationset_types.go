@@ -22,6 +22,7 @@ import (
 	"sort"
 
 	"github.com/argoproj/argo-cd/v2/common"
+	"github.com/argoproj/gitops-engine/pkg/health"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -52,6 +53,28 @@ type ApplicationSetSpec struct {
 	Generators []ApplicationSetGenerator `json:"generators"`
 	Template   ApplicationSetTemplate    `json:"template"`
 	SyncPolicy *ApplicationSetSyncPolicy `json:"syncPolicy,omitempty"`
+	Strategy   *ApplicationSetStrategy   `json:"strategy,omitempty"`
+}
+
+// ApplicationSetStrategy configures how generated Applications are updated in sequence.
+type ApplicationSetStrategy struct {
+	// PreserveResourcesOnDeletion will preserve resources on deletion. If PreserveResourcesOnDeletion is set to true, these Applications will not be deleted.
+	Type          string                              `json:"type,omitempty"`
+	RollingUpdate ApplicationSetRollingUpdateStrategy `json:"rollingUpdate,omitempty"`
+}
+type ApplicationSetRollingUpdateStrategy struct {
+	Steps []ApplicationSetRollingUpdateStep `json:"steps,omitempty"`
+}
+
+type ApplicationSetRollingUpdateStep struct {
+	MatchExpressions []ApplicationMatchExpression `json:"matchExpressions,omitempty"`
+	MaxUpdate        *int32                       `json:"maxUpdate,omitempty" protobuf:"varint,3,opt,name=maxUpdate"`
+}
+
+type ApplicationMatchExpression struct {
+	Key      string   `json:"key,omitempty"`
+	Operator string   `json:"operator,omitempty"`
+	Values   []string `json:"values,omitempty"`
 }
 
 // ApplicationSetSyncPolicy configures how generated Applications will relate to their
@@ -460,7 +483,8 @@ type PullRequestGeneratorFilter struct {
 type ApplicationSetStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
-	Conditions []ApplicationSetCondition `json:"conditions,omitempty"`
+	Conditions        []ApplicationSetCondition                  `json:"conditions,omitempty"`
+	ApplicationStatus map[string]ApplicationSetApplicationStatus `json:"applicationStatus,omitempty"`
 }
 
 // ApplicationSetCondition contains details about an applicationset condition, which is usally an error or warning
@@ -502,6 +526,17 @@ const (
 	ApplicationSetConditionParametersGenerated ApplicationSetConditionType = "ParametersGenerated"
 	ApplicationSetConditionResourcesUpToDate   ApplicationSetConditionType = "ResourcesUpToDate"
 )
+
+// ApplicationSetApplicationCondition contains details about each Application managed by the ApplicationSet
+type ApplicationSetApplicationStatus struct {
+	// Message contains human-readable message indicating details about condition
+	Message string `json:"message" protobuf:"bytes,2,opt,name=message"`
+	// LastTransitionTime is the time the condition was last observed
+	LastTransitionTime *metav1.Time `json:"lastTransitionTime,omitempty" protobuf:"bytes,3,opt,name=lastTransitionTime"`
+	// True/False/Unknown
+	Status  health.HealthStatusCode `json:"status" protobuf:"bytes,4,opt,name=status"`
+	Version string                  `json:"version" protobuf:"bytes,5,opt,name=version"`
+}
 
 type ApplicationSetReasonType string
 
@@ -574,4 +609,14 @@ func findConditionIndex(conditions []ApplicationSetCondition, t ApplicationSetCo
 		}
 	}
 	return -1
+}
+
+func (status *ApplicationSetStatus) SetApplicationStatus(appName string, appStatus ApplicationSetApplicationStatus) {
+	now := metav1.Now()
+	appStatus.LastTransitionTime = &now
+
+	if status.ApplicationStatus == nil {
+		status.ApplicationStatus = make(map[string]ApplicationSetApplicationStatus)
+	}
+	status.ApplicationStatus[appName] = appStatus
 }

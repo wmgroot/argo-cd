@@ -34,6 +34,7 @@ import (
 	"github.com/argoproj/argo-cd/v2/common"
 	argov1alpha1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 	"github.com/argoproj/argo-cd/v2/util/db"
+	"github.com/argoproj/gitops-engine/pkg/health"
 
 	log "github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -86,6 +87,8 @@ func (r *ApplicationSetReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	log.Infof("loop start retrieve AppSet: %+v", applicationSetInfo)
+
 	// Do not attempt to further reconcile the ApplicationSet if it is being deleted.
 	if applicationSetInfo.ObjectMeta.DeletionTimestamp != nil {
 		return ctrl.Result{}, nil
@@ -132,6 +135,33 @@ func (r *ApplicationSetReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		)
 		return ctrl.Result{RequeueAfter: ReconcileRequeueOnValidationError}, nil
 	}
+
+	fmt.Println("----------------------------------------------------------------------------------------")
+	fmt.Println("custom progressive sync reconciler logic")
+	fmt.Println("----------------------------------------------------------------------------------------")
+
+	// currentApplications, err := r.getCurrentApplications(ctx, applicationSetInfo)
+	// if err != nil {
+	// 	return ctrl.Result{}, err
+	// }
+
+	err = r.updateApplicationSetApplicationStatus(ctx, &applicationSetInfo)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	// log.Infof("AppSet Applications: %v", currentApplications)
+
+	appDependencyList, err := r.buildAppDependencyList(ctx, applicationSetInfo, desiredApplications)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	log.Infof("AppSet App Dependency List: %v", appDependencyList)
+
+	appSyncMap, err := r.buildAppSyncMap(ctx, applicationSetInfo, appDependencyList)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	log.Infof("AppSet App Sync Map: %v", appSyncMap)
 
 	var validApps []argov1alpha1.Application
 	for i := range desiredApplications {
@@ -339,11 +369,69 @@ func (r *ApplicationSetReconciler) setApplicationSetStatusCondition(ctx context.
 			newConditions, evaluatedTypes,
 		)
 
-		// Update the newly fetched object with new set of conditions
-		err := r.Client.Status().Update(ctx, applicationSet)
-		if err != nil && !apierr.IsNotFound(err) {
-			return fmt.Errorf("unable to set application set condition: %v", err)
+		// // Update the newly fetched object with new set of conditions
+		// err := r.Client.Status().Update(ctx, applicationSet)
+		// if err != nil && !apierr.IsNotFound(err) {
+		// 	return fmt.Errorf("unable to set application set condition: %v", err)
+		// }
+	}
+
+	return nil
+}
+
+func (r *ApplicationSetReconciler) setApplicationSetApplicationStatus(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet, applicationStatuses map[string]argoprojiov1alpha1.ApplicationSetApplicationStatus) error {
+
+	needToUpdateStatus := false
+	for appName, appStatus := range applicationStatuses {
+
+		if currentStatus, ok := applicationSet.Status.ApplicationStatus[appName]; ok {
+
+			log.Printf("currentStatus: %+v", currentStatus)
+			log.Printf("appStatus: %+v", appStatus)
+			if currentStatus.Message != appStatus.Message || currentStatus.Status != appStatus.Status || currentStatus.Version != appStatus.Version {
+				needToUpdateStatus = true
+				break
+			}
+		} else {
+			needToUpdateStatus = true
+			break
 		}
+	}
+
+	log.Printf("needToUpdateStatus: %v", needToUpdateStatus)
+	if needToUpdateStatus {
+		// fetch updated Application Set object before updating it
+		namespacedName := types.NamespacedName{Namespace: applicationSet.Namespace, Name: applicationSet.Name}
+		if err := r.Get(ctx, namespacedName, applicationSet); err != nil {
+			if client.IgnoreNotFound(err) != nil {
+				return nil
+			}
+			return fmt.Errorf("error fetching updated application set: %v", err)
+		}
+
+		log.Printf("updating with: %+v", applicationStatuses)
+		for appName, appStatus := range applicationStatuses {
+			applicationSet.Status.SetApplicationStatus(appName, appStatus)
+			// log.Printf("appName: %v - new appStatus: %+v", appName, applicationSet.Status)
+		}
+
+		log.Printf("appSet Status to update: %+v", applicationSet.Status)
+		// Update the newly fetched object with new set of ApplicationStatus
+		err := r.Client.Status().Update(ctx, applicationSet)
+		if err != nil {
+
+			log.Errorf("unable to set application set status: %v", err)
+			return fmt.Errorf("unable to set application set status: %v", err)
+		}
+
+		if err := r.Get(ctx, namespacedName, applicationSet); err != nil {
+			if client.IgnoreNotFound(err) != nil {
+				return nil
+			}
+			return fmt.Errorf("error fetching updated application set: %v", err)
+		}
+
+		log.Printf("updated appset Status: %+v", applicationSet.Status)
 	}
 
 	return nil
@@ -716,6 +804,134 @@ func (r *ApplicationSetReconciler) removeFinalizerOnInvalidDestination(ctx conte
 				return err
 			}
 		}
+	}
+
+	return nil
+}
+
+// // used to hold the current version of an Application resource for easy reference
+// func (r *ApplicationSetReconciler) buildAppVersionMap(ctx context.Context, applications []argov1alpha1.Application) (map[string]string, error) {
+// 	appVersionMap := map[string]string{}
+// 	for _, app := range applications {
+// 		appVersionMap[app.Name] = app.Annotations["applicationset.argoproj.io/applicationset-version"]
+// 	}
+// 	return appVersionMap, nil
+// }
+
+// this map is used to determine which stage of Applications are ready to be updated in the reconciler loop
+func (r *ApplicationSetReconciler) buildAppDependencyList(ctx context.Context, applicationSet argoprojiov1alpha1.ApplicationSet, applications []argov1alpha1.Application) ([][]string, error) {
+
+	if applicationSet.Spec.Strategy == nil {
+		return [][]string{}, nil
+	}
+	steps := applicationSet.Spec.Strategy.RollingUpdate.Steps
+	log.Infof("AppSet rollingUpdate steps: %v", steps)
+
+	appDependencyList := make([][]string, 0)
+	for range steps {
+		appDependencyList = append(appDependencyList, make([]string, 0))
+	}
+
+	// use applicationLabelSelectors to filter generated Applications into steps and status by name
+	for _, app := range applications {
+		// appMap[app.Name] = app
+
+		for i, step := range steps {
+
+			selected := true // default to true, assuming the current Application is a match for the given step matchExpression
+			for _, matchExpression := range step.MatchExpressions {
+
+				if val, ok := app.Labels[matchExpression.Key]; ok {
+					if matchExpression.Operator == "In" {
+						valueMatched := false
+						for _, value := range matchExpression.Values {
+							if val == value {
+								valueMatched = true
+								break
+							}
+						}
+						// none of the matchExpression values was a match with the Applications labels
+						if !valueMatched {
+							selected = false
+							break
+						}
+						// handle invalid operator selection
+					} else {
+						log.Warnf("skipping AppSet rollingUpdate step Application selection for '%v', invalid matchExpression operate provided: '%v' ", applicationSet.Name, matchExpression.Operator)
+						selected = false
+						break
+					}
+					// no matching label key found for the current Application
+				} else {
+					selected = false
+					break
+				}
+			}
+
+			if selected {
+				appDependencyList[i] = append(appDependencyList[i], app.Name)
+			}
+		}
+	}
+
+	return appDependencyList, nil
+}
+
+// this map is used to determine which stage of Applications are ready to be updated in the reconciler loop
+func (r *ApplicationSetReconciler) buildAppSyncMap(ctx context.Context, applicationSet argoprojiov1alpha1.ApplicationSet, appDependencyList [][]string) (map[string]bool, error) {
+
+	appSyncMap := map[string]bool{}
+	syncEnabled := true
+
+	// healthy stages and the first non-healthy stage should have sync enabled
+	// every stage after should have sync disabled
+
+	for i, _ := range appDependencyList {
+		// set the syncEnabled boolean for every Application in the current step
+		for _, appName := range appDependencyList[i] {
+			appSyncMap[appName] = syncEnabled
+		}
+
+		// detect if we need to halt before progressing to the next step
+		for _, appName := range appDependencyList[i] {
+
+			if appStatus, ok := applicationSet.Status.ApplicationStatus[appName]; ok {
+				if appStatus.Status != health.HealthStatusHealthy {
+					syncEnabled = false
+				}
+			} else {
+				// no Application status found, likely because the Application is being newly created
+				syncEnabled = false
+			}
+		}
+	}
+
+	return appSyncMap, nil
+}
+
+// this map is used to determine which stage of Applications are ready to be updated in the reconciler loop
+func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatus(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet) error {
+
+	applications, err := r.getCurrentApplications(ctx, *applicationSet)
+	if err != nil {
+		return err
+	}
+
+	appStatuses := make(map[string]argoprojiov1alpha1.ApplicationSetApplicationStatus)
+
+	for _, app := range applications {
+		appStatuses[app.Name] = argoprojiov1alpha1.ApplicationSetApplicationStatus{
+			LastTransitionTime: nil,
+			Message:            "status updated",
+			Status:             app.Status.Health.Status,
+			Version:            applicationSet.ResourceVersion,
+		}
+	}
+
+	log.Infof("AppSet AppStatuses: %v", appStatuses)
+	err = r.setApplicationSetApplicationStatus(ctx, applicationSet, appStatuses)
+	if err != nil {
+		return err
 	}
 
 	return nil
