@@ -379,20 +379,29 @@ func (r *ApplicationSetReconciler) setApplicationSetStatusCondition(ctx context.
 	return nil
 }
 
-func (r *ApplicationSetReconciler) setApplicationSetApplicationStatus(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet, applicationStatuses map[string]argoprojiov1alpha1.ApplicationSetApplicationStatus) error {
+func findApplicationStatusIndex(appStatuses []argoprojiov1alpha1.ApplicationSetApplicationStatus, application string) int {
+	for i := range appStatuses {
+		if appStatuses[i].Application == application {
+			return i
+		}
+	}
+	return -1
+}
+
+func (r *ApplicationSetReconciler) setApplicationSetApplicationStatus(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet, applicationStatuses []argoprojiov1alpha1.ApplicationSetApplicationStatus) error {
 
 	needToUpdateStatus := false
-	for appName, appStatus := range applicationStatuses {
-
-		if currentStatus, ok := applicationSet.Status.ApplicationStatus[appName]; ok {
-
-			log.Printf("currentStatus: %+v", currentStatus)
-			log.Printf("appStatus: %+v", appStatus)
-			if currentStatus.Message != appStatus.Message || currentStatus.Status != appStatus.Status || currentStatus.Version != appStatus.Version {
-				needToUpdateStatus = true
-				break
-			}
-		} else {
+	for i := range applicationStatuses {
+		appStatus := applicationStatuses[i]
+		idx := findApplicationStatusIndex(applicationSet.Status.ApplicationStatus, appStatus.Application)
+		if idx == -1 {
+			needToUpdateStatus = true
+			break
+		}
+		currentStatus := applicationSet.Status.ApplicationStatus[idx]
+		log.Printf("currentStatus: %+v", currentStatus)
+		log.Printf("appStatus: %+v", appStatus)
+		if currentStatus.Message != appStatus.Message || currentStatus.Status != appStatus.Status || currentStatus.Version != appStatus.Version {
 			needToUpdateStatus = true
 			break
 		}
@@ -410,8 +419,8 @@ func (r *ApplicationSetReconciler) setApplicationSetApplicationStatus(ctx contex
 		}
 
 		log.Printf("updating with: %+v", applicationStatuses)
-		for appName, appStatus := range applicationStatuses {
-			applicationSet.Status.SetApplicationStatus(appName, appStatus)
+		for i := range applicationStatuses {
+			applicationSet.Status.SetApplicationStatus(applicationStatuses[i])
 			// log.Printf("appName: %v - new appStatus: %+v", appName, applicationSet.Status)
 		}
 
@@ -879,7 +888,6 @@ func (r *ApplicationSetReconciler) buildAppDependencyList(ctx context.Context, a
 
 // this map is used to determine which stage of Applications are ready to be updated in the reconciler loop
 func (r *ApplicationSetReconciler) buildAppSyncMap(ctx context.Context, applicationSet argoprojiov1alpha1.ApplicationSet, appDependencyList [][]string) (map[string]bool, error) {
-
 	appSyncMap := map[string]bool{}
 	syncEnabled := true
 
@@ -894,14 +902,16 @@ func (r *ApplicationSetReconciler) buildAppSyncMap(ctx context.Context, applicat
 
 		// detect if we need to halt before progressing to the next step
 		for _, appName := range appDependencyList[i] {
-
-			if appStatus, ok := applicationSet.Status.ApplicationStatus[appName]; ok {
-				if appStatus.Status != health.HealthStatusHealthy {
-					syncEnabled = false
-				}
-			} else {
+			idx := findApplicationStatusIndex(applicationSet.Status.ApplicationStatus, appName)
+			if idx == -1 {
 				// no Application status found, likely because the Application is being newly created
 				syncEnabled = false
+				break
+			}
+			appStatus := applicationSet.Status.ApplicationStatus[idx]
+			if appStatus.Status != health.HealthStatusHealthy {
+				syncEnabled = false
+				break
 			}
 		}
 	}
@@ -917,15 +927,16 @@ func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatus(ctx con
 		return err
 	}
 
-	appStatuses := make(map[string]argoprojiov1alpha1.ApplicationSetApplicationStatus)
+	appStatuses := make([]argoprojiov1alpha1.ApplicationSetApplicationStatus, 0, len(applications))
 
 	for _, app := range applications {
-		appStatuses[app.Name] = argoprojiov1alpha1.ApplicationSetApplicationStatus{
+		appStatuses = append(appStatuses, argoprojiov1alpha1.ApplicationSetApplicationStatus{
+			Application:        app.Name,
 			LastTransitionTime: nil,
 			Message:            "status updated",
 			Status:             app.Status.Health.Status,
 			Version:            applicationSet.ResourceVersion,
-		}
+		})
 	}
 
 	log.Infof("AppSet AppStatuses: %v", appStatuses)

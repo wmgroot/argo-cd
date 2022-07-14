@@ -6228,15 +6228,8 @@ spec:
                       type: object
                   type: object
                 type: array
-              syncPolicy:
-                properties:
-                  preserveResourcesOnDeletion:
-                    type: boolean
-                type: object
               strategy:
                 properties:
-                  type:
-                    type: string
                   rollingUpdate:
                     properties:
                       steps:
@@ -6253,20 +6246,21 @@ spec:
                                     items:
                                       type: string
                                     type: array
-                                required:
-                                - key
-                                - operator
-                                - values
                                 type: object
                               type: array
                             maxUpdate:
-                              format: int64
+                              format: int32
                               type: integer
-                          required:
-                          - matchExpressions
                           type: object
                         type: array
                     type: object
+                  type:
+                    type: string
+                type: object
+              syncPolicy:
+                properties:
+                  preserveResourcesOnDeletion:
+                    type: boolean
                 type: object
               template:
                 properties:
@@ -6529,6 +6523,27 @@ spec:
             type: object
           status:
             properties:
+              applicationStatus:
+                items:
+                  properties:
+                    application:
+                      type: string
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      type: string
+                    status:
+                      type: string
+                    version:
+                      type: string
+                  required:
+                  - application
+                  - message
+                  - status
+                  - version
+                  type: object
+                type: array
               conditions:
                 items:
                   properties:
@@ -6550,24 +6565,6 @@ spec:
                   - type
                   type: object
                 type: array
-              applicationStatus:
-                items:
-                  properties:
-                    lastTransitionTime:
-                      format: date-time
-                      type: string
-                    message:
-                      type: string
-                    status:
-                      type: string
-                    version:
-                      type: string
-                  required:
-                  - message
-                  - status
-                  - version
-                  type: object
-                type: object
             type: object
         required:
         - metadata

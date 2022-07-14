@@ -483,8 +483,8 @@ type PullRequestGeneratorFilter struct {
 type ApplicationSetStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
-	Conditions        []ApplicationSetCondition                  `json:"conditions,omitempty"`
-	ApplicationStatus map[string]ApplicationSetApplicationStatus `json:"applicationStatus,omitempty"`
+	Conditions        []ApplicationSetCondition         `json:"conditions,omitempty"`
+	ApplicationStatus []ApplicationSetApplicationStatus `json:"applicationStatus,omitempty"`
 }
 
 // ApplicationSetCondition contains details about an applicationset condition, which is usally an error or warning
@@ -529,13 +529,14 @@ const (
 
 // ApplicationSetApplicationCondition contains details about each Application managed by the ApplicationSet
 type ApplicationSetApplicationStatus struct {
+	Application string `json:"application" protobuf:"bytes,2,opt,name=message"`
 	// Message contains human-readable message indicating details about condition
-	Message string `json:"message" protobuf:"bytes,2,opt,name=message"`
+	Message string `json:"message" protobuf:"bytes,3,opt,name=message"`
 	// LastTransitionTime is the time the condition was last observed
-	LastTransitionTime *metav1.Time `json:"lastTransitionTime,omitempty" protobuf:"bytes,3,opt,name=lastTransitionTime"`
+	LastTransitionTime *metav1.Time `json:"lastTransitionTime,omitempty" protobuf:"bytes,4,opt,name=lastTransitionTime"`
 	// True/False/Unknown
-	Status  health.HealthStatusCode `json:"status" protobuf:"bytes,4,opt,name=status"`
-	Version string                  `json:"version" protobuf:"bytes,5,opt,name=version"`
+	Status  health.HealthStatusCode `json:"status" protobuf:"bytes,5,opt,name=status"`
+	Version string                  `json:"version" protobuf:"bytes,6,opt,name=version"`
 }
 
 type ApplicationSetReasonType string
@@ -611,12 +612,15 @@ func findConditionIndex(conditions []ApplicationSetCondition, t ApplicationSetCo
 	return -1
 }
 
-func (status *ApplicationSetStatus) SetApplicationStatus(appName string, appStatus ApplicationSetApplicationStatus) {
+func (status *ApplicationSetStatus) SetApplicationStatus(newStatus ApplicationSetApplicationStatus) {
 	now := metav1.Now()
-	appStatus.LastTransitionTime = &now
-
-	if status.ApplicationStatus == nil {
-		status.ApplicationStatus = make(map[string]ApplicationSetApplicationStatus)
+	newStatus.LastTransitionTime = &now
+	for i := range status.ApplicationStatus {
+		appStatus := status.ApplicationStatus[i]
+		if appStatus.Application == newStatus.Application {
+			status.ApplicationStatus[i] = newStatus
+			return
+		}
 	}
-	status.ApplicationStatus[appName] = appStatus
+	status.ApplicationStatus = append(status.ApplicationStatus, newStatus)
 }
