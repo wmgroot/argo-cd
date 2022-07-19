@@ -22,7 +22,6 @@ import (
 	"sort"
 
 	"github.com/argoproj/argo-cd/v2/common"
-	"github.com/argoproj/gitops-engine/pkg/health"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -530,13 +529,13 @@ const (
 // ApplicationSetApplicationCondition contains details about each Application managed by the ApplicationSet
 type ApplicationSetApplicationStatus struct {
 	Application string `json:"application" protobuf:"bytes,2,opt,name=message"`
-	// Message contains human-readable message indicating details about condition
-	Message string `json:"message" protobuf:"bytes,3,opt,name=message"`
 	// LastTransitionTime is the time the condition was last observed
 	LastTransitionTime *metav1.Time `json:"lastTransitionTime,omitempty" protobuf:"bytes,4,opt,name=lastTransitionTime"`
-	// True/False/Unknown
-	Status  health.HealthStatusCode `json:"status" protobuf:"bytes,5,opt,name=status"`
-	Version string                  `json:"version" protobuf:"bytes,6,opt,name=version"`
+	// Message contains human-readable message indicating details about the status
+	Message            string `json:"message" protobuf:"bytes,3,opt,name=message"`
+	ObservedGeneration int64  `json:"observedGeneration,omitempty"`
+	Status             string `json:"status" protobuf:"bytes,3,opt,name=status"`
+	// Status             health.HealthStatusCode `json:"status" protobuf:"bytes,5,opt,name=status"`
 }
 
 type ApplicationSetReasonType string

@@ -6533,15 +6533,16 @@ spec:
                       type: string
                     message:
                       type: string
+                    observedGeneration:
+                      format: int64
+                      type: integer
                     status:
-                      type: string
-                    version:
                       type: string
                   required:
                   - application
                   - message
+                  - observedGeneration
                   - status
-                  - version
                   type: object
                 type: array
               conditions:
