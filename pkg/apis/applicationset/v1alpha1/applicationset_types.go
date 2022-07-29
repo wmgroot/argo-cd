@@ -25,6 +25,7 @@ import (
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 )
@@ -54,6 +55,28 @@ type ApplicationSetSpec struct {
 	Generators []ApplicationSetGenerator `json:"generators"`
 	Template   ApplicationSetTemplate    `json:"template"`
 	SyncPolicy *ApplicationSetSyncPolicy `json:"syncPolicy,omitempty"`
+	Strategy   *ApplicationSetStrategy   `json:"strategy,omitempty"`
+}
+
+// ApplicationSetStrategy configures how generated Applications are updated in sequence.
+type ApplicationSetStrategy struct {
+	Type          string                               `json:"type,omitempty"`
+	RollingUpdate *ApplicationSetRollingUpdateStrategy `json:"rollingUpdate,omitempty"`
+}
+type ApplicationSetRollingUpdateStrategy struct {
+	Steps []ApplicationSetRollingUpdateStep `json:"steps,omitempty"`
+}
+
+type ApplicationSetRollingUpdateStep struct {
+	MatchExpressions []ApplicationMatchExpression `json:"matchExpressions,omitempty"`
+	MaxUpdate        *intstr.IntOrString          `json:"maxUpdate,omitempty" protobuf:"bytes,6,opt,name=maxUpdate"`
+	// MaxUpdate        *int32                       `json:"maxUpdate,omitempty" protobuf:"varint,3,opt,name=maxUpdate"`
+}
+
+type ApplicationMatchExpression struct {
+	Key      string   `json:"key,omitempty"`
+	Operator string   `json:"operator,omitempty"`
+	Values   []string `json:"values,omitempty"`
 }
 
 // ApplicationSetSyncPolicy configures how generated Applications will relate to their
@@ -499,7 +522,8 @@ type PullRequestGeneratorFilter struct {
 type ApplicationSetStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
-	Conditions []ApplicationSetCondition `json:"conditions,omitempty"`
+	Conditions        []ApplicationSetCondition         `json:"conditions,omitempty"`
+	ApplicationStatus []ApplicationSetApplicationStatus `json:"applicationStatus,omitempty"`
 }
 
 // ApplicationSetCondition contains details about an applicationset condition, which is usally an error or warning
@@ -540,7 +564,23 @@ const (
 	ApplicationSetConditionErrorOccurred       ApplicationSetConditionType = "ErrorOccurred"
 	ApplicationSetConditionParametersGenerated ApplicationSetConditionType = "ParametersGenerated"
 	ApplicationSetConditionResourcesUpToDate   ApplicationSetConditionType = "ResourcesUpToDate"
+	ApplicationSetConditionRolloutProgressing  ApplicationSetConditionType = "RolloutProgressing"
 )
+
+// ApplicationSetApplicationCondition contains details about each Application managed by the ApplicationSet
+type ApplicationSetApplicationStatus struct {
+	// Application contains the name of the Application resource
+	Application string `json:"application" protobuf:"bytes,2,opt,name=application"`
+	// LastTransitionTime is the time the status was last updated
+	LastTransitionTime *metav1.Time `json:"lastTransitionTime,omitempty" protobuf:"bytes,4,opt,name=lastTransitionTime"`
+	// Message contains human-readable message indicating details about the status
+	Message string `json:"message" protobuf:"bytes,3,opt,name=message"`
+	// ObservedGeneration contains the ApplicationSet generation used to create the current version of the Application resource
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// Status contains the AppSet's perceived status of the managed Application resource: (Waiting, Pending, Progressing, Healthy)
+	Status string `json:"status" protobuf:"bytes,3,opt,name=status"`
+	// Status             health.HealthStatusCode `json:"status" protobuf:"bytes,5,opt,name=status"`	# not usable because we need custom statuses like "Waiting" and "Pending"
+}
 
 type ApplicationSetReasonType string
 
@@ -556,6 +596,8 @@ const (
 	ApplicationSetReasonDeleteApplicationError           = "DeleteApplicationError"
 	ApplicationSetReasonRefreshApplicationError          = "RefreshApplicationError"
 	ApplicationSetReasonApplicationValidationError       = "ApplicationValidationError"
+	ApplicationSetReasonApplicationSetModified           = "ApplicationSetModified"
+	ApplicationSetReasonApplicationSetRolloutComplete    = "ApplicationSetRolloutComplete"
 )
 
 // ApplicationSetList contains a list of ApplicationSet
@@ -613,4 +655,17 @@ func findConditionIndex(conditions []ApplicationSetCondition, t ApplicationSetCo
 		}
 	}
 	return -1
+}
+
+func (status *ApplicationSetStatus) SetApplicationStatus(newStatus ApplicationSetApplicationStatus) {
+	// now := metav1.Now()
+	// newStatus.LastTransitionTime = &now
+	for i := range status.ApplicationStatus {
+		appStatus := status.ApplicationStatus[i]
+		if appStatus.Application == newStatus.Application {
+			status.ApplicationStatus[i] = newStatus
+			return
+		}
+	}
+	status.ApplicationStatus = append(status.ApplicationStatus, newStatus)
 }
