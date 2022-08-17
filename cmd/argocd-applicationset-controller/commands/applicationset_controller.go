@@ -45,18 +45,20 @@ func getSubmoduleEnabled() bool {
 
 func NewCommand() *cobra.Command {
 	var (
-		clientConfig         clientcmd.ClientConfig
-		metricsAddr          string
-		probeBindAddr        string
-		webhookAddr          string
-		enableLeaderElection bool
-		namespace            string
-		argocdRepoServer     string
-		policy               string
-		debugLog             bool
-		dryRun               bool
-		logFormat            string
-		logLevel             string
+		clientConfig                  clientcmd.ClientConfig
+		metricsAddr                   string
+		probeBindAddr                 string
+		webhookAddr                   string
+		enableLeaderElection          bool
+		namespace                     string
+		argocdRepoServer              string
+		policy                        string
+		debugLog                      bool
+		dryRun                        bool
+		logFormat                     string
+		logLevel                      string
+		enableProgressiveRollouts     bool
+		applicationProgressingTimeout uint
 	)
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
@@ -178,16 +180,18 @@ func NewCommand() *cobra.Command {
 
 			go func() { errors.CheckError(askPassServer.Run(askpass.SocketPath)) }()
 			if err = (&controllers.ApplicationSetReconciler{
-				Generators:       topLevelGenerators,
-				Client:           mgr.GetClient(),
-				Log:              ctrl.Log.WithName("controllers").WithName("ApplicationSet"),
-				Scheme:           mgr.GetScheme(),
-				Recorder:         mgr.GetEventRecorderFor("applicationset-controller"),
-				Renderer:         &utils.Render{},
-				Policy:           policyObj,
-				ArgoAppClientset: appSetConfig,
-				KubeClientset:    k8sClient,
-				ArgoDB:           argoCDDB,
+				Generators:                    topLevelGenerators,
+				Client:                        mgr.GetClient(),
+				Log:                           ctrl.Log.WithName("controllers").WithName("ApplicationSet"),
+				Scheme:                        mgr.GetScheme(),
+				Recorder:                      mgr.GetEventRecorderFor("applicationset-controller"),
+				Renderer:                      &utils.Render{},
+				Policy:                        policyObj,
+				ArgoAppClientset:              appSetConfig,
+				KubeClientset:                 k8sClient,
+				ArgoDB:                        argoCDDB,
+				EnableProgressiveRollouts:     enableProgressiveRollouts,
+				ApplicationProgressingTimeout: applicationProgressingTimeout,
 			}).SetupWithManager(mgr); err != nil {
 				log.Error(err, "unable to create controller", "controller", "ApplicationSet")
 				os.Exit(1)
@@ -216,6 +220,8 @@ func NewCommand() *cobra.Command {
 	command.Flags().StringVar(&logLevel, "loglevel", "info", "Set the logging level. One of: debug|info|warn|error")
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "Enable dry run mode")
 	command.Flags().StringVar(&logFormat, "logformat", "text", "Set the logging format. One of: text|json")
+	command.Flags().BoolVar(&enableProgressiveRollouts, "enable-progressive-rollouts", env.ParseBoolFromEnv("ARGOCD_APPLICATIONSET_ENABLE_PROGRESSIVE_ROLLOUTS", false), "Enable use of the experimental progressive rollouts feature.")
+	command.Flags().UintVar(&applicationProgressingTimeout, "application-progressing-timeout", 300, "When Progressive Rollouts is enabled, automatically move a Pending Application to Healthy after this many seconds.")
 	return &command
 }
 

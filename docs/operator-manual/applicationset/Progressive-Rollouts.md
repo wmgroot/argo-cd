@@ -9,6 +9,11 @@ The Progressive Rollouts feature set is intended to be light and flexible. The f
 * Deployments, Daemonsets, StatefulSets, and [Argo Rollouts](https://argoproj.github.io/argo-rollouts/) are all supported, because the Application enters a "Progressing" state while pods are being rolled out.
 * [Argo CD Resource Hooks](../../user-guide/resource_hooks.md) are supported. We recommend this approach for users that need advanced functionality when an Argo Rollout cannot be used, such as smoke testing after a Daemonset change.
 
+## Enabling Progressive Rollouts
+As an experimental feature, progressive rollouts must be explicitly enabled, in one of two ways.
+1. Pass `--enable-progressive-rollouts` to the ApplicationSet controller args.
+1. Set `ARGOCD_APPLICATIONSET_ENABLE_PROGRESSIVE_ROLLOUTS=true` in the ApplicationSet controller environment variables.
+
 ## Strategies
 
 * AllAtOnce (default)

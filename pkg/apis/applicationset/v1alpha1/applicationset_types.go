@@ -70,7 +70,6 @@ type ApplicationSetRollingUpdateStrategy struct {
 type ApplicationSetRollingUpdateStep struct {
 	MatchExpressions []ApplicationMatchExpression `json:"matchExpressions,omitempty"`
 	MaxUpdate        *intstr.IntOrString          `json:"maxUpdate,omitempty" protobuf:"bytes,6,opt,name=maxUpdate"`
-	// MaxUpdate        *int32                       `json:"maxUpdate,omitempty" protobuf:"varint,3,opt,name=maxUpdate"`
 }
 
 type ApplicationMatchExpression struct {
@@ -575,11 +574,10 @@ type ApplicationSetApplicationStatus struct {
 	LastTransitionTime *metav1.Time `json:"lastTransitionTime,omitempty" protobuf:"bytes,4,opt,name=lastTransitionTime"`
 	// Message contains human-readable message indicating details about the status
 	Message string `json:"message" protobuf:"bytes,3,opt,name=message"`
-	// ObservedGeneration contains the ApplicationSet generation used to create the current version of the Application resource
-	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// ObservedHash contains the last applied hash of the generated Application resource
+	ObservedHash string `json:"observedHash,omitempty"`
 	// Status contains the AppSet's perceived status of the managed Application resource: (Waiting, Pending, Progressing, Healthy)
 	Status string `json:"status" protobuf:"bytes,3,opt,name=status"`
-	// Status             health.HealthStatusCode `json:"status" protobuf:"bytes,5,opt,name=status"`	# not usable because we need custom statuses like "Waiting" and "Pending"
 }
 
 type ApplicationSetReasonType string

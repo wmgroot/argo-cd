@@ -8,7 +8,7 @@ metadata:
 data:
   # Repo server address. (default "argocd-repo-server:8081")
   repo.server: "argocd-repo-server:8081"
-  
+
   # Dex server address (default "http://argocd-dex-server:5556")
   dex.server: "http://argocd-dex-server:5556"
 
@@ -57,6 +57,9 @@ data:
   controller.resource.health.persist: "true"
   # Cache expiration default (default 24h0m0s)
   controller.default.cache.expiration: "24h0m0s"
+
+  # Enables use of the Progressive Rollouts capability for ApplicationSets
+  applicationset.enable.progressive.rollouts: "false"
 
   ## Server properties
   # Run server without TLS
@@ -131,14 +134,14 @@ data:
   reposerver.max.combined.directory.manifests.size: '10M'
   # Paths to be excluded from the tarball streamed to plugins. Separate with ;
   reposerver.plugin.tar.exclusions: ""
-  # Allow repositories to contain symlinks that leave the boundaries of the repository. 
-  # Changing this to "true" will not allow _all_ out-of-bounds symlinks. Those will still be blocked for things like values 
+  # Allow repositories to contain symlinks that leave the boundaries of the repository.
+  # Changing this to "true" will not allow _all_ out-of-bounds symlinks. Those will still be blocked for things like values
   # files in Helm charts. But symlinks which are not explicitly blocked by other checks will be allowed.
   reposerver.allow.oob.symlinks: "false"
   # Maximum size of tarball when streaming manifests to the repo server for generation
   reposerver.streamed.manifest.max.tar.size: "100M"
   # Maximum size of extracted manifests when streaming manifests to the repo server for generation
   reposerver.streamed.manifest.max.extracted.size: "1G"
-  
+
   # Disable TLS on the HTTP endpoint
   dexserver.disable.tls: "false"

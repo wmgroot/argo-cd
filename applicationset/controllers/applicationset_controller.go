@@ -16,6 +16,9 @@ package controllers
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -68,6 +71,8 @@ type ApplicationSetReconciler struct {
 	KubeClientset    kubernetes.Interface
 	utils.Policy
 	utils.Renderer
+	EnableProgressiveRollouts     bool
+	ApplicationProgressingTimeout uint
 }
 
 // +kubebuilder:rbac:groups=argoproj.io,resources=applicationsets,verbs=get;list;watch;create;update;patch;delete
@@ -139,29 +144,42 @@ func (r *ApplicationSetReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	_, err = r.updateApplicationSetApplicationStatus(ctx, &applicationSetInfo, applications)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+	appSyncMap := map[string]bool{}
 
-	appDependencyList, appStepMap, err := r.buildAppDependencyList(ctx, applicationSetInfo, desiredApplications)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+	if r.EnableProgressiveRollouts {
+		appHashMap := map[string]string{}
+		for _, app := range applications {
+			hash, err := hashApplicaton(app)
+			if err != nil {
+				log.Warnf("could not compute a hash value for Application '%v', will have to assume that the Application had changes", app.Name)
+			}
+			appHashMap[app.Name] = hash
+		}
 
-	appSyncMap, err := r.buildAppSyncMap(ctx, applicationSetInfo, appDependencyList)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+		_, err = r.updateApplicationSetApplicationStatus(ctx, &applicationSetInfo, applications, appHashMap)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 
-	_, err = r.updateApplicationSetApplicationStatusProgress(ctx, &applicationSetInfo, appSyncMap, appStepMap)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+		appDependencyList, appStepMap, err := r.buildAppDependencyList(ctx, applicationSetInfo, desiredApplications)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 
-	_, err = r.updateApplicationSetApplicationStatusConditions(ctx, &applicationSetInfo)
-	if err != nil {
-		return ctrl.Result{}, err
+		appSyncMap, err = r.buildAppSyncMap(ctx, applicationSetInfo, appDependencyList, appHashMap)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+
+		_, err = r.updateApplicationSetApplicationStatusProgress(ctx, &applicationSetInfo, appSyncMap, appStepMap, appHashMap)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+
+		_, err = r.updateApplicationSetApplicationStatusConditions(ctx, &applicationSetInfo)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	var validApps []argov1alpha1.Application
@@ -192,19 +210,21 @@ func (r *ApplicationSetReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		)
 	}
 
-	// filter down valid applications if rollout strategy is enabled
-	strategy := applicationSetInfo.Spec.Strategy
-	if strategy != nil && strategy.Type == "RollingUpdate" {
-		var rolloutApps []argov1alpha1.Application
-		for i := range validApps {
-			// check appSyncMap to determine which Applications are ready to be updated and which should be skipped
-			if !appSyncMap[validApps[i].Name] {
-				log.Infof("skipping application generation, waiting for previous rollouts to complete before updating: %v", validApps[i].Name)
-				continue
+	if r.EnableProgressiveRollouts {
+		// filter down valid applications if rollout strategy is enabled
+		strategy := applicationSetInfo.Spec.Strategy
+		if strategy != nil && strategy.Type == "RollingUpdate" {
+			var rolloutApps []argov1alpha1.Application
+			for i := range validApps {
+				// check appSyncMap to determine which Applications are ready to be updated and which should be skipped
+				if !appSyncMap[validApps[i].Name] {
+					log.Infof("skipping application generation, waiting for previous rollouts to complete before updating: %v", validApps[i].Name)
+					continue
+				}
+				rolloutApps = append(rolloutApps, validApps[i])
 			}
-			rolloutApps = append(rolloutApps, validApps[i])
+			validApps = rolloutApps
 		}
-		validApps = rolloutApps
 	}
 
 	if r.Policy.Update() {
@@ -415,7 +435,7 @@ func (r *ApplicationSetReconciler) setApplicationSetApplicationStatus(ctx contex
 			break
 		}
 		currentStatus := applicationSet.Status.ApplicationStatus[idx]
-		if currentStatus.Message != appStatus.Message || currentStatus.Status != appStatus.Status || currentStatus.ObservedGeneration != appStatus.ObservedGeneration {
+		if currentStatus.Message != appStatus.Message || currentStatus.Status != appStatus.Status || currentStatus.ObservedHash != appStatus.ObservedHash {
 			needToUpdateStatus = true
 			break
 		}
@@ -826,6 +846,26 @@ func (r *ApplicationSetReconciler) removeFinalizerOnInvalidDestination(ctx conte
 	return nil
 }
 
+// computes a deterministic hash representing the Application spec
+func hashApplicaton(application argov1alpha1.Application) (string, error) {
+	// ensure that the status and other dynamic fields are not included in the hash
+	appToHash := argov1alpha1.Application{}
+	appToHash.Annotations = application.Annotations
+	appToHash.Labels = application.Labels
+	appToHash.Name = application.Name
+	appToHash.Namespace = application.Namespace
+	appToHash.Spec = application.Spec
+
+	jsonString, err := json.Marshal(appToHash)
+	if err != nil {
+		return "", err
+	}
+
+	hash := md5.Sum(jsonString)
+	hashString := hex.EncodeToString(hash[:])
+	return hashString, nil
+}
+
 // this list tracks which Applications belong to each RollingUpdate step
 func (r *ApplicationSetReconciler) buildAppDependencyList(ctx context.Context, applicationSet argoprojiov1alpha1.ApplicationSet, applications []argov1alpha1.Application) ([][]string, map[string]int, error) {
 
@@ -890,7 +930,7 @@ func (r *ApplicationSetReconciler) buildAppDependencyList(ctx context.Context, a
 }
 
 // this map is used to determine which stage of Applications are ready to be updated in the reconciler loop
-func (r *ApplicationSetReconciler) buildAppSyncMap(ctx context.Context, applicationSet argoprojiov1alpha1.ApplicationSet, appDependencyList [][]string) (map[string]bool, error) {
+func (r *ApplicationSetReconciler) buildAppSyncMap(ctx context.Context, applicationSet argoprojiov1alpha1.ApplicationSet, appDependencyList [][]string, appHashMap map[string]string) (map[string]bool, error) {
 	appSyncMap := map[string]bool{}
 	syncEnabled := true
 
@@ -911,8 +951,11 @@ func (r *ApplicationSetReconciler) buildAppSyncMap(ctx context.Context, applicat
 				syncEnabled = false
 				break
 			}
+
 			appStatus := applicationSet.Status.ApplicationStatus[idx]
-			if appStatus.Status != "Healthy" || appStatus.ObservedGeneration != applicationSet.Generation {
+			// we still need to complete the current step if the Application is not yet Healthy or there are still pending Application changes
+			hashOutdated := appHashMap[appName] != appStatus.ObservedHash || appHashMap[appName] == ""
+			if appStatus.Status != "Healthy" || hashOutdated {
 				syncEnabled = false
 				break
 			}
@@ -923,7 +966,7 @@ func (r *ApplicationSetReconciler) buildAppSyncMap(ctx context.Context, applicat
 }
 
 // check the status of each Application's status and promote Applications to the next status if needed
-func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatus(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet, applications []argov1alpha1.Application) ([]argoprojiov1alpha1.ApplicationSetApplicationStatus, error) {
+func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatus(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet, applications []argov1alpha1.Application, appHashMap map[string]string) ([]argoprojiov1alpha1.ApplicationSetApplicationStatus, error) {
 
 	now := metav1.Now()
 	appStatuses := make([]argoprojiov1alpha1.ApplicationSetApplicationStatus, 0, len(applications))
@@ -939,17 +982,19 @@ func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatus(ctx con
 				Application:        app.Name,
 				LastTransitionTime: &now,
 				Message:            "No Application status found, defaulting status to Waiting.",
-				ObservedGeneration: applicationSet.Generation, // TODO: this should probably not be set to the current generation, maybe -1 instead?
+				ObservedHash:       "",
 				Status:             "Waiting",
 			})
 		} else {
 			// we have an existing AppStatus
 			currentAppStatus := applicationSet.Status.ApplicationStatus[idx]
 
-			if currentAppStatus.ObservedGeneration < applicationSet.Generation {
+			hashOutdated := appHashMap[app.Name] != currentAppStatus.ObservedHash || appHashMap[app.Name] == ""
+			if hashOutdated && currentAppStatus.Status != "Waiting" {
+				log.Infof("Application %v is outdated, updating its ApplciationSet status to Waiting", app.Name)
 				currentAppStatus.LastTransitionTime = &now
 				currentAppStatus.Status = "Waiting"
-				currentAppStatus.Message = "Application is out of date with the current AppSet generation, setting status to Waiting."
+				currentAppStatus.Message = "Application has pending changes, setting status to Waiting."
 			}
 
 			if currentAppStatus.Status == "Pending" {
@@ -960,13 +1005,13 @@ func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatus(ctx con
 					currentAppStatus.Message = "Application resource became Progressing, updating status from Pending to Progressing."
 				} else {
 					duration := now.Sub(currentAppStatus.LastTransitionTime.Time)
-					log.Infof("%v pending duration minutes = %v", app.Name, duration.Minutes())
+					log.Infof("%v pending duration seconds = %v", app.Name, duration.Seconds())
 					// handle timeout case where Application never proceeds to "Progressing", set status back to "Healthy"
-					if duration.Minutes() > 5 {
-						log.Infof("Application %v has been in Pending status for >5min, moving back to Healthy", app.Name)
+					if duration.Seconds() > float64(r.ApplicationProgressingTimeout) {
+						log.Infof("Application %v has been in Pending status for >%v seconds, moving back to Healthy", app.Name, r.ApplicationProgressingTimeout)
 						currentAppStatus.LastTransitionTime = &now
 						currentAppStatus.Status = "Healthy"
-						currentAppStatus.Message = "Application Pending status timed out while waiting to become Progressing, reset status to Healthy."
+						currentAppStatus.Message = fmt.Sprintf("Application Pending status timed out after waiting %v seconds to become Progressing, reset status to Healthy.", r.ApplicationProgressingTimeout)
 					}
 				}
 			}
@@ -991,7 +1036,7 @@ func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatus(ctx con
 }
 
 // check Applications that are in Waiting status and promote them to Pending if needed
-func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusProgress(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet, appSyncMap map[string]bool, appStepMap map[string]int) ([]argoprojiov1alpha1.ApplicationSetApplicationStatus, error) {
+func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusProgress(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet, appSyncMap map[string]bool, appStepMap map[string]int, appHashMap map[string]string) ([]argoprojiov1alpha1.ApplicationSetApplicationStatus, error) {
 	now := metav1.Now()
 
 	appStatuses := make([]argoprojiov1alpha1.ApplicationSetApplicationStatus, 0, len(applicationSet.Status.ApplicationStatus))
@@ -1008,7 +1053,9 @@ func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusProgress
 		// populate updateCountMap with counts of existing Pending and Progressing Applications
 		for _, appStatus := range applicationSet.Status.ApplicationStatus {
 			totalCountMap[appStepMap[appStatus.Application]] += 1
-			if appStatus.ObservedGeneration == applicationSet.Generation && (appStatus.Status == "Pending" || appStatus.Status == "Progressing") {
+
+			hashOutdated := appHashMap[appStatus.Application] != appStatus.ObservedHash || appHashMap[appStatus.Application] == ""
+			if hashOutdated && (appStatus.Status == "Pending" || appStatus.Status == "Progressing") {
 				updateCountMap[appStepMap[appStatus.Application]] += 1
 			}
 		}
@@ -1039,7 +1086,7 @@ func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusProgress
 				log.Infof("Application %v moved to Pending status, watching for the Application to start Progressing", appStatus.Application)
 				appStatus.LastTransitionTime = &now
 				appStatus.Status = "Pending"
-				appStatus.ObservedGeneration = applicationSet.Generation
+				appStatus.ObservedHash = appHashMap[appStatus.Application]
 				appStatus.Message = "Application moved to Pending status, watching for the Application resource to start Progressing."
 
 				updateCountMap[appStepMap[appStatus.Application]] += 1

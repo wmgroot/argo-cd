@@ -1958,7 +1958,7 @@ func TestSetApplicationSetApplicationStatus(t *testing.T) {
 			Application:        "my-application",
 			LastTransitionTime: &metav1.Time{},
 			Message:            "testing SetApplicationSetApplicationStatus to Healthy",
-			ObservedGeneration: 1,
+			ObservedHash:       "1",
 			Status:             "Healthy",
 		},
 	}
@@ -1987,6 +1987,98 @@ func TestSetApplicationSetApplicationStatus(t *testing.T) {
 	assert.Nil(t, err)
 
 	assert.Len(t, appSet.Status.ApplicationStatus, 1)
+}
+func TestHashApplicaton(t *testing.T) {
+
+	for _, cc := range []struct {
+		name         string
+		app          argov1alpha1.Application
+		expectedHash string
+	}{
+		{
+			name:         "handles an empty application",
+			app:          argov1alpha1.Application{},
+			expectedHash: "a5225141462ae4d3ed1c341033e57fd5",
+		},
+		{
+			name: "handles a basic application",
+			app: argov1alpha1.Application{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "app-dev",
+					Labels: map[string]string{
+						"env": "dev",
+					},
+				},
+				Spec: argov1alpha1.ApplicationSpec{
+					Source: argov1alpha1.ApplicationSource{
+						RepoURL: "https://example.com",
+					},
+					Destination: argov1alpha1.ApplicationDestination{
+						Name: "in-cluster",
+					},
+				},
+			},
+			expectedHash: "1aedc739ac4aa446c656994a7e8e3b80",
+		},
+		{
+			name: "handles a different application",
+			app: argov1alpha1.Application{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "app-dev",
+					Labels: map[string]string{
+						"env": "dev",
+					},
+				},
+				Spec: argov1alpha1.ApplicationSpec{
+					Source: argov1alpha1.ApplicationSource{
+						RepoURL: "https://bad-example.com",
+					},
+					Destination: argov1alpha1.ApplicationDestination{
+						Name: "out-cluster",
+					},
+				},
+			},
+			expectedHash: "863b6d5713d302cec90bf547e1ae9281",
+		},
+		{
+			name: "ignores the status and operation fields",
+			app: argov1alpha1.Application{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "app-dev",
+					Labels: map[string]string{
+						"env": "dev",
+					},
+				},
+				Spec: argov1alpha1.ApplicationSpec{
+					Source: argov1alpha1.ApplicationSource{
+						RepoURL: "https://example.com",
+					},
+					Destination: argov1alpha1.ApplicationDestination{
+						Name: "in-cluster",
+					},
+				},
+				Status: argov1alpha1.ApplicationStatus{
+					Health: argov1alpha1.HealthStatus{
+						Status:  health.HealthStatusHealthy,
+						Message: "the app is healthy",
+					},
+				},
+				Operation: &argov1alpha1.Operation{
+					InitiatedBy: argov1alpha1.OperationInitiator{
+						Username:  "test-user",
+						Automated: false,
+					},
+				},
+			},
+			expectedHash: "1aedc739ac4aa446c656994a7e8e3b80",
+		},
+	} {
+		t.Run(cc.name, func(t *testing.T) {
+			hash, err := hashApplicaton(cc.app)
+			assert.Equal(t, err, nil, "expected no errors, but errors occured")
+			assert.Equal(t, cc.expectedHash, hash, "expected hash did not match actual")
+		})
+	}
 }
 
 func TestBuildAppDependencyList(t *testing.T) {
@@ -2360,6 +2452,7 @@ func TestBuildAppSyncMap(t *testing.T) {
 		name              string
 		appSet            argoprojiov1alpha1.ApplicationSet
 		appDependencyList [][]string
+		appHashMap        map[string]string
 		expectedMap       map[string]bool
 	}{
 		{
@@ -2387,6 +2480,10 @@ func TestBuildAppSyncMap(t *testing.T) {
 				{"app1"},
 				{"app2"},
 			},
+			appHashMap: map[string]string{
+				"app1": "11",
+				"app2": "22",
+			},
 			expectedMap: map[string]bool{
 				"app1": true,
 				"app2": false,
@@ -2411,25 +2508,24 @@ func TestBuildAppSyncMap(t *testing.T) {
 			},
 		},
 		{
-			name: "handles applications that are healthy and match the appset generation",
+			name: "handles applications that are healthy and have no changes",
 			appSet: argoprojiov1alpha1.ApplicationSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "name",
-					Namespace:  "argocd",
-					Generation: 1,
+					Name:      "name",
+					Namespace: "argocd",
 				},
 				Spec: argoprojiov1alpha1.ApplicationSetSpec{},
 				Status: argoprojiov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 						{
-							Application:        "app1",
-							ObservedGeneration: 1,
-							Status:             "Healthy",
+							Application:  "app1",
+							ObservedHash: "1",
+							Status:       "Healthy",
 						},
 						{
-							Application:        "app2",
-							ObservedGeneration: 1,
-							Status:             "Healthy",
+							Application:  "app2",
+							ObservedHash: "2",
+							Status:       "Healthy",
 						},
 					},
 				},
@@ -2437,6 +2533,10 @@ func TestBuildAppSyncMap(t *testing.T) {
 			appDependencyList: [][]string{
 				{"app1"},
 				{"app2"},
+			},
+			appHashMap: map[string]string{
+				"app1": "1",
+				"app2": "2",
 			},
 			expectedMap: map[string]bool{
 				"app1": true,
@@ -2444,25 +2544,24 @@ func TestBuildAppSyncMap(t *testing.T) {
 			},
 		},
 		{
-			name: "handles applications that are healthy but out of date",
+			name: "handles applications that are healthy, but out of date",
 			appSet: argoprojiov1alpha1.ApplicationSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "name",
-					Namespace:  "argocd",
-					Generation: 2,
+					Name:      "name",
+					Namespace: "argocd",
 				},
 				Spec: argoprojiov1alpha1.ApplicationSetSpec{},
 				Status: argoprojiov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 						{
-							Application:        "app1",
-							ObservedGeneration: 1,
-							Status:             "Healthy",
+							Application:  "app1",
+							ObservedHash: "1",
+							Status:       "Healthy",
 						},
 						{
-							Application:        "app2",
-							ObservedGeneration: 1,
-							Status:             "Healthy",
+							Application:  "app2",
+							ObservedHash: "2",
+							Status:       "Healthy",
 						},
 					},
 				},
@@ -2470,6 +2569,46 @@ func TestBuildAppSyncMap(t *testing.T) {
 			appDependencyList: [][]string{
 				{"app1"},
 				{"app2"},
+			},
+			appHashMap: map[string]string{
+				"app1": "11",
+				"app2": "22",
+			},
+			expectedMap: map[string]bool{
+				"app1": true,
+				"app2": false,
+			},
+		},
+		{
+			name: "handles applications that are healthy, but have an empty hash",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:  "app1",
+							ObservedHash: "1",
+							Status:       "Healthy",
+						},
+						{
+							Application:  "app2",
+							ObservedHash: "2",
+							Status:       "Healthy",
+						},
+					},
+				},
+			},
+			appDependencyList: [][]string{
+				{"app1"},
+				{"app2"},
+			},
+			appHashMap: map[string]string{
+				"app1": "",
+				"app2": "",
 			},
 			expectedMap: map[string]bool{
 				"app1": true,
@@ -2480,22 +2619,21 @@ func TestBuildAppSyncMap(t *testing.T) {
 			name: "handles applications that are up to date, but not healthy",
 			appSet: argoprojiov1alpha1.ApplicationSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "name",
-					Namespace:  "argocd",
-					Generation: 2,
+					Name:      "name",
+					Namespace: "argocd",
 				},
 				Spec: argoprojiov1alpha1.ApplicationSetSpec{},
 				Status: argoprojiov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 						{
-							Application:        "app1",
-							ObservedGeneration: 2,
-							Status:             "Progressing",
+							Application:  "app1",
+							ObservedHash: "11",
+							Status:       "Progressing",
 						},
 						{
-							Application:        "app2",
-							ObservedGeneration: 2,
-							Status:             "Progressing",
+							Application:  "app2",
+							ObservedHash: "22",
+							Status:       "Progressing",
 						},
 					},
 				},
@@ -2503,6 +2641,10 @@ func TestBuildAppSyncMap(t *testing.T) {
 			appDependencyList: [][]string{
 				{"app1"},
 				{"app2"},
+			},
+			appHashMap: map[string]string{
+				"app1": "11",
+				"app2": "22",
 			},
 			expectedMap: map[string]bool{
 				"app1": true,
@@ -2513,32 +2655,36 @@ func TestBuildAppSyncMap(t *testing.T) {
 			name: "handles a lot of applications",
 			appSet: argoprojiov1alpha1.ApplicationSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "name",
-					Namespace:  "argocd",
-					Generation: 2,
+					Name:      "name",
+					Namespace: "argocd",
 				},
 				Spec: argoprojiov1alpha1.ApplicationSetSpec{},
 				Status: argoprojiov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 						{
-							Application:        "app1",
-							ObservedGeneration: 2,
-							Status:             "Healthy",
+							Application:  "app1",
+							ObservedHash: "1",
+							Status:       "Healthy",
 						},
 						{
-							Application:        "app2",
-							ObservedGeneration: 2,
-							Status:             "Healthy",
+							Application:  "app2",
+							ObservedHash: "2",
+							Status:       "Healthy",
 						},
 						{
-							Application:        "app4",
-							ObservedGeneration: 2,
-							Status:             "Healthy",
+							Application:  "app4",
+							ObservedHash: "4",
+							Status:       "Healthy",
 						},
 						{
-							Application:        "app7",
-							ObservedGeneration: 2,
-							Status:             "Healthy",
+							Application:  "app5",
+							ObservedHash: "5",
+							Status:       "Healthy",
+						},
+						{
+							Application:  "app7",
+							ObservedHash: "7",
+							Status:       "Healthy",
 						},
 					},
 				},
@@ -2547,6 +2693,12 @@ func TestBuildAppSyncMap(t *testing.T) {
 				{"app1", "app4", "app7"},
 				{"app2", "app5", "app8"},
 				{"app3", "app6", "app9"},
+			},
+			appHashMap: map[string]string{
+				"app1": "1",
+				"app2": "2",
+				"app4": "4",
+				"app7": "7",
 			},
 			expectedMap: map[string]bool{
 				"app1": true,
@@ -2578,7 +2730,7 @@ func TestBuildAppSyncMap(t *testing.T) {
 				KubeClientset:    kubeclientset,
 			}
 
-			appSyncMap, err := r.buildAppSyncMap(context.TODO(), cc.appSet, cc.appDependencyList)
+			appSyncMap, err := r.buildAppSyncMap(context.TODO(), cc.appSet, cc.appDependencyList, cc.appHashMap)
 			assert.Equal(t, err, nil, "expected no errors, but errors occured")
 			assert.Equal(t, cc.expectedMap, appSyncMap, "expected appSyncMap did not match actual")
 		})
@@ -2598,6 +2750,7 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 		name              string
 		appSet            argoprojiov1alpha1.ApplicationSet
 		apps              []argov1alpha1.Application
+		appHashMap        map[string]string
 		expectedAppStatus []argoprojiov1alpha1.ApplicationSetApplicationStatus
 	}{
 		{
@@ -2607,9 +2760,6 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 					Name:      "name",
 					Namespace: "argocd",
 				},
-				// Status: argoprojiov1alpha1.ApplicationSetStatus{
-				// 	ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{},
-				// },
 			},
 			apps:              []argov1alpha1.Application{},
 			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{},
@@ -2636,10 +2786,10 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 			},
 			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 				{
-					Application:        "app1",
-					Message:            "No Application status found, defaulting status to Waiting.",
-					ObservedGeneration: 0,
-					Status:             "Waiting",
+					Application:  "app1",
+					Message:      "No Application status found, defaulting status to Waiting.",
+					ObservedHash: "",
+					Status:       "Waiting",
 				},
 			},
 		},
@@ -2666,28 +2816,27 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 			},
 			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 				{
-					Application:        "app1",
-					Message:            "No Application status found, defaulting status to Waiting.",
-					ObservedGeneration: 0,
-					Status:             "Waiting",
+					Application:  "app1",
+					Message:      "No Application status found, defaulting status to Waiting.",
+					ObservedHash: "",
+					Status:       "Waiting",
 				},
 			},
 		},
 		{
-			name: "progresses an out of date healthy application to waiting",
+			name: "progresses an out of date application to waiting",
 			appSet: argoprojiov1alpha1.ApplicationSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "name",
-					Namespace:  "argocd",
-					Generation: 2,
+					Name:      "name",
+					Namespace: "argocd",
 				},
 				Status: argoprojiov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 						{
-							Application:        "app1",
-							Message:            "",
-							ObservedGeneration: 1,
-							Status:             "Healthy",
+							Application:  "app1",
+							Message:      "",
+							ObservedHash: "1",
+							Status:       "Healthy",
 						},
 					},
 				},
@@ -2704,17 +2853,20 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 					},
 				},
 			},
+			appHashMap: map[string]string{
+				"app1": "11",
+			},
 			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 				{
-					Application:        "app1",
-					Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
-					ObservedGeneration: 1,
-					Status:             "Waiting",
+					Application:  "app1",
+					Message:      "Application has pending changes, setting status to Waiting.",
+					ObservedHash: "1",
+					Status:       "Waiting",
 				},
 			},
 		},
 		{
-			name: "progresses a pending application to progressing",
+			name: "progresses an out of date application with no hash to waiting",
 			appSet: argoprojiov1alpha1.ApplicationSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "name",
@@ -2724,10 +2876,134 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 				Status: argoprojiov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 						{
-							Application:        "app1",
-							Message:            "",
-							ObservedGeneration: 2,
-							Status:             "Pending",
+							Application: "app1",
+							Message:     "",
+							Status:      "Healthy",
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app1",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Health: argov1alpha1.HealthStatus{
+							Status: health.HealthStatusHealthy,
+						},
+					},
+				},
+			},
+			appHashMap: map[string]string{
+				"app1": "",
+			},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application: "app1",
+					Message:     "Application has pending changes, setting status to Waiting.",
+					Status:      "Waiting",
+				},
+			},
+		},
+		{
+			name: "does not progress an unchanged application to waiting",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:  "app1",
+							Message:      "",
+							ObservedHash: "1",
+							Status:       "Healthy",
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app1",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Health: argov1alpha1.HealthStatus{
+							Status: health.HealthStatusHealthy,
+						},
+					},
+				},
+			},
+			appHashMap: map[string]string{
+				"app1": "1",
+			},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:  "app1",
+					Message:      "",
+					ObservedHash: "1",
+					Status:       "Healthy",
+				},
+			},
+		},
+		{
+			name: "does not progress a waiting application to waiting",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:  "app1",
+							Message:      "",
+							ObservedHash: "1",
+							Status:       "Waiting",
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app1",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Health: argov1alpha1.HealthStatus{
+							Status: health.HealthStatusHealthy,
+						},
+					},
+				},
+			},
+			appHashMap: map[string]string{
+				"app1": "1",
+			},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:  "app1",
+					Message:      "",
+					ObservedHash: "1",
+					Status:       "Waiting",
+				},
+			},
+		},
+		{
+			name: "progresses a pending application to progressing",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:  "app1",
+							Message:      "",
+							ObservedHash: "1",
+							Status:       "Pending",
 						},
 					},
 				},
@@ -2744,12 +3020,15 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 					},
 				},
 			},
+			appHashMap: map[string]string{
+				"app1": "1",
+			},
 			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 				{
-					Application:        "app1",
-					Message:            "Application resource became Progressing, updating status from Pending to Progressing.",
-					ObservedGeneration: 2,
-					Status:             "Progressing",
+					Application:  "app1",
+					Message:      "Application resource became Progressing, updating status from Pending to Progressing.",
+					ObservedHash: "1",
+					Status:       "Progressing",
 				},
 			},
 		},
@@ -2757,9 +3036,8 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 			name: "progresses a pending application to healthy on timeout",
 			appSet: argoprojiov1alpha1.ApplicationSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "name",
-					Namespace:  "argocd",
-					Generation: 2,
+					Name:      "name",
+					Namespace: "argocd",
 				},
 				Status: argoprojiov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
@@ -2767,7 +3045,7 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 							Application:        "app1",
 							LastTransitionTime: &metav1.Time{},
 							Message:            "",
-							ObservedGeneration: 2,
+							ObservedHash:       "1",
 							Status:             "Pending",
 						},
 					},
@@ -2785,12 +3063,15 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 					},
 				},
 			},
+			appHashMap: map[string]string{
+				"app1": "1",
+			},
 			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 				{
-					Application:        "app1",
-					Message:            "Application Pending status timed out while waiting to become Progressing, reset status to Healthy.",
-					ObservedGeneration: 2,
-					Status:             "Healthy",
+					Application:  "app1",
+					Message:      "Application Pending status timed out after waiting 0 seconds to become Progressing, reset status to Healthy.",
+					ObservedHash: "1",
+					Status:       "Healthy",
 				},
 			},
 		},
@@ -2798,17 +3079,16 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 			name: "progresses a progressing application to healthy",
 			appSet: argoprojiov1alpha1.ApplicationSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "name",
-					Namespace:  "argocd",
-					Generation: 2,
+					Name:      "name",
+					Namespace: "argocd",
 				},
 				Status: argoprojiov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 						{
-							Application:        "app1",
-							Message:            "",
-							ObservedGeneration: 2,
-							Status:             "Progressing",
+							Application:  "app1",
+							Message:      "",
+							ObservedHash: "1",
+							Status:       "Progressing",
 						},
 					},
 				},
@@ -2825,12 +3105,15 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 					},
 				},
 			},
+			appHashMap: map[string]string{
+				"app1": "1",
+			},
 			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 				{
-					Application:        "app1",
-					Message:            "Application resource became Healthy, updating status from Progressing to Healthy.",
-					ObservedGeneration: 2,
-					Status:             "Healthy",
+					Application:  "app1",
+					Message:      "Application resource became Healthy, updating status from Progressing to Healthy.",
+					ObservedHash: "1",
+					Status:       "Healthy",
 				},
 			},
 		},
@@ -2854,7 +3137,7 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 				KubeClientset:    kubeclientset,
 			}
 
-			appStatuses, err := r.updateApplicationSetApplicationStatus(context.TODO(), &cc.appSet, cc.apps)
+			appStatuses, err := r.updateApplicationSetApplicationStatus(context.TODO(), &cc.appSet, cc.apps, cc.appHashMap)
 
 			// opt out of testing the LastTransitionTime is accurate
 			for i := range appStatuses {
@@ -2881,6 +3164,7 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 		appSet            argoprojiov1alpha1.ApplicationSet
 		appSyncMap        map[string]bool
 		appStepMap        map[string]int
+		appHashMap        map[string]string
 		expectedAppStatus []argoprojiov1alpha1.ApplicationSetApplicationStatus
 	}{
 		{
@@ -2972,9 +3256,8 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 			name: "handles updating a status from Waiting to Pending",
 			appSet: argoprojiov1alpha1.ApplicationSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "name",
-					Namespace:  "argocd",
-					Generation: 2,
+					Name:      "name",
+					Namespace: "argocd",
 				},
 				Spec: argoprojiov1alpha1.ApplicationSetSpec{
 					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
@@ -2994,10 +3277,9 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 				Status: argoprojiov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 						{
-							Application:        "app1",
-							Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
-							ObservedGeneration: 1,
-							Status:             "Waiting",
+							Application: "app1",
+							Message:     "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							Status:      "Waiting",
 						},
 					},
 				},
@@ -3008,12 +3290,15 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 			appStepMap: map[string]int{
 				"app1": 0,
 			},
+			appHashMap: map[string]string{
+				"app1": "1",
+			},
 			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 				{
 					Application:        "app1",
 					LastTransitionTime: nil,
 					Message:            "Application moved to Pending status, watching for the Application resource to start Progressing.",
-					ObservedGeneration: 2,
+					ObservedHash:       "1",
 					Status:             "Pending",
 				},
 			},
@@ -3022,9 +3307,8 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 			name: "does not update a status if appSyncMap is false",
 			appSet: argoprojiov1alpha1.ApplicationSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "name",
-					Namespace:  "argocd",
-					Generation: 2,
+					Name:      "name",
+					Namespace: "argocd",
 				},
 				Spec: argoprojiov1alpha1.ApplicationSetSpec{
 					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
@@ -3044,10 +3328,9 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 				Status: argoprojiov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 						{
-							Application:        "app1",
-							Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
-							ObservedGeneration: 1,
-							Status:             "Waiting",
+							Application: "app1",
+							Message:     "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							Status:      "Waiting",
 						},
 					},
 				},
@@ -3063,7 +3346,6 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 					Application:        "app1",
 					LastTransitionTime: nil,
 					Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
-					ObservedGeneration: 1,
 					Status:             "Waiting",
 				},
 			},
@@ -3072,9 +3354,8 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 			name: "does not update a status if status is not pending",
 			appSet: argoprojiov1alpha1.ApplicationSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "name",
-					Namespace:  "argocd",
-					Generation: 2,
+					Name:      "name",
+					Namespace: "argocd",
 				},
 				Spec: argoprojiov1alpha1.ApplicationSetSpec{
 					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
@@ -3094,10 +3375,9 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 				Status: argoprojiov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 						{
-							Application:        "app1",
-							Message:            "Application Pending status timed out while waiting to become Progressing, reset status to Healthy.",
-							ObservedGeneration: 1,
-							Status:             "Healthy",
+							Application: "app1",
+							Message:     "Application Pending status timed out while waiting to become Progressing, reset status to Healthy.",
+							Status:      "Healthy",
 						},
 					},
 				},
@@ -3113,7 +3393,6 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 					Application:        "app1",
 					LastTransitionTime: nil,
 					Message:            "Application Pending status timed out while waiting to become Progressing, reset status to Healthy.",
-					ObservedGeneration: 1,
 					Status:             "Healthy",
 				},
 			},
@@ -3122,9 +3401,8 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 			name: "does not update a status if maxUpdate has already been reached",
 			appSet: argoprojiov1alpha1.ApplicationSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "name",
-					Namespace:  "argocd",
-					Generation: 2,
+					Name:      "name",
+					Namespace: "argocd",
 				},
 				Spec: argoprojiov1alpha1.ApplicationSetSpec{
 					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
@@ -3148,28 +3426,24 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 				Status: argoprojiov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 						{
-							Application:        "app1",
-							Message:            "Application resource became Progressing, updating status from Pending to Progressing.",
-							ObservedGeneration: 2,
-							Status:             "Progressing",
+							Application: "app1",
+							Message:     "Application resource became Progressing, updating status from Pending to Progressing.",
+							Status:      "Progressing",
 						},
 						{
-							Application:        "app2",
-							Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
-							ObservedGeneration: 1,
-							Status:             "Waiting",
+							Application: "app2",
+							Message:     "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							Status:      "Waiting",
 						},
 						{
-							Application:        "app3",
-							Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
-							ObservedGeneration: 1,
-							Status:             "Waiting",
+							Application: "app3",
+							Message:     "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							Status:      "Waiting",
 						},
 						{
-							Application:        "app4",
-							Message:            "Application moved to Pending status, watching for the Application resource to start Progressing.",
-							ObservedGeneration: 2,
-							Status:             "Pending",
+							Application: "app4",
+							Message:     "Application moved to Pending status, watching for the Application resource to start Progressing.",
+							Status:      "Pending",
 						},
 					},
 				},
@@ -3191,28 +3465,24 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 					Application:        "app1",
 					LastTransitionTime: nil,
 					Message:            "Application resource became Progressing, updating status from Pending to Progressing.",
-					ObservedGeneration: 2,
 					Status:             "Progressing",
 				},
 				{
 					Application:        "app2",
 					LastTransitionTime: nil,
 					Message:            "Application moved to Pending status, watching for the Application resource to start Progressing.",
-					ObservedGeneration: 2,
 					Status:             "Pending",
 				},
 				{
 					Application:        "app3",
 					LastTransitionTime: nil,
 					Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
-					ObservedGeneration: 1,
 					Status:             "Waiting",
 				},
 				{
 					Application:        "app4",
 					LastTransitionTime: nil,
 					Message:            "Application moved to Pending status, watching for the Application resource to start Progressing.",
-					ObservedGeneration: 2,
 					Status:             "Pending",
 				},
 			},
@@ -3221,9 +3491,8 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 			name: "handles maxUpdate set to percentage string",
 			appSet: argoprojiov1alpha1.ApplicationSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "name",
-					Namespace:  "argocd",
-					Generation: 2,
+					Name:      "name",
+					Namespace: "argocd",
 				},
 				Spec: argoprojiov1alpha1.ApplicationSetSpec{
 					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
@@ -3247,22 +3516,19 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 				Status: argoprojiov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
 						{
-							Application:        "app1",
-							Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
-							ObservedGeneration: 1,
-							Status:             "Waiting",
+							Application: "app1",
+							Message:     "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							Status:      "Waiting",
 						},
 						{
-							Application:        "app2",
-							Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
-							ObservedGeneration: 1,
-							Status:             "Waiting",
+							Application: "app2",
+							Message:     "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							Status:      "Waiting",
 						},
 						{
-							Application:        "app3",
-							Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
-							ObservedGeneration: 1,
-							Status:             "Waiting",
+							Application: "app3",
+							Message:     "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							Status:      "Waiting",
 						},
 					},
 				},
@@ -3282,21 +3548,18 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 					Application:        "app1",
 					LastTransitionTime: nil,
 					Message:            "Application moved to Pending status, watching for the Application resource to start Progressing.",
-					ObservedGeneration: 2,
 					Status:             "Pending",
 				},
 				{
 					Application:        "app2",
 					LastTransitionTime: nil,
 					Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
-					ObservedGeneration: 1,
 					Status:             "Waiting",
 				},
 				{
 					Application:        "app3",
 					LastTransitionTime: nil,
 					Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
-					ObservedGeneration: 1,
 					Status:             "Waiting",
 				},
 			},
@@ -3321,7 +3584,7 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 				KubeClientset:    kubeclientset,
 			}
 
-			appStatuses, err := r.updateApplicationSetApplicationStatusProgress(context.TODO(), &cc.appSet, cc.appSyncMap, cc.appStepMap)
+			appStatuses, err := r.updateApplicationSetApplicationStatusProgress(context.TODO(), &cc.appSet, cc.appSyncMap, cc.appStepMap, cc.appHashMap)
 
 			// opt out of testing the LastTransitionTime is accurate
 			for i := range appStatuses {
