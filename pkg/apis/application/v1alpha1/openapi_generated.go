@@ -23,13 +23,18 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationCondition":                schema_pkg_apis_application_v1alpha1_ApplicationCondition(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationDestination":              schema_pkg_apis_application_v1alpha1_ApplicationDestination(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationList":                     schema_pkg_apis_application_v1alpha1_ApplicationList(ref),
+		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationMatchExpression":          schema_pkg_apis_application_v1alpha1_ApplicationMatchExpression(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSet":                      schema_pkg_apis_application_v1alpha1_ApplicationSet(ref),
+		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetApplicationStatus":     schema_pkg_apis_application_v1alpha1_ApplicationSetApplicationStatus(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetCondition":             schema_pkg_apis_application_v1alpha1_ApplicationSetCondition(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetGenerator":             schema_pkg_apis_application_v1alpha1_ApplicationSetGenerator(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetList":                  schema_pkg_apis_application_v1alpha1_ApplicationSetList(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetNestedGenerator":       schema_pkg_apis_application_v1alpha1_ApplicationSetNestedGenerator(ref),
+		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRollingUpdateStep":     schema_pkg_apis_application_v1alpha1_ApplicationSetRollingUpdateStep(ref),
+		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRollingUpdateStrategy": schema_pkg_apis_application_v1alpha1_ApplicationSetRollingUpdateStrategy(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetSpec":                  schema_pkg_apis_application_v1alpha1_ApplicationSetSpec(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetStatus":                schema_pkg_apis_application_v1alpha1_ApplicationSetStatus(ref),
+		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetStrategy":              schema_pkg_apis_application_v1alpha1_ApplicationSetStrategy(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetSyncPolicy":            schema_pkg_apis_application_v1alpha1_ApplicationSetSyncPolicy(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetTemplate":              schema_pkg_apis_application_v1alpha1_ApplicationSetTemplate(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetTemplateMeta":          schema_pkg_apis_application_v1alpha1_ApplicationSetTemplateMeta(ref),
@@ -648,6 +653,44 @@ func schema_pkg_apis_application_v1alpha1_ApplicationList(ref common.ReferenceCa
 	}
 }
 
+func schema_pkg_apis_application_v1alpha1_ApplicationMatchExpression(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"key": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"operator": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"values": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schema_pkg_apis_application_v1alpha1_ApplicationSet(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -693,6 +736,59 @@ func schema_pkg_apis_application_v1alpha1_ApplicationSet(ref common.ReferenceCal
 		},
 		Dependencies: []string{
 			"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetSpec", "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_pkg_apis_application_v1alpha1_ApplicationSetApplicationStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ApplicationSetApplicationCondition contains details about each Application managed by the ApplicationSet",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"application": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Application contains the name of the Application resource",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"lastTransitionTime": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LastTransitionTime is the time the status was last updated",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Message contains human-readable message indicating details about the status",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"observedHash": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ObservedHash contains the last applied hash of the generated Application resource",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Status contains the AppSet's perceived status of the managed Application resource: (Waiting, Pending, Progressing, Healthy)",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"application", "message", "status"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
 	}
 }
 
@@ -923,6 +1019,65 @@ func schema_pkg_apis_application_v1alpha1_ApplicationSetNestedGenerator(ref comm
 	}
 }
 
+func schema_pkg_apis_application_v1alpha1_ApplicationSetRollingUpdateStep(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"matchExpressions": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationMatchExpression"),
+									},
+								},
+							},
+						},
+					},
+					"maxUpdate": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("k8s.io/apimachinery/pkg/util/intstr.IntOrString"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationMatchExpression", "k8s.io/apimachinery/pkg/util/intstr.IntOrString"},
+	}
+}
+
+func schema_pkg_apis_application_v1alpha1_ApplicationSetRollingUpdateStrategy(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"steps": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRollingUpdateStep"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRollingUpdateStep"},
+	}
+}
+
 func schema_pkg_apis_application_v1alpha1_ApplicationSetSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -960,12 +1115,17 @@ func schema_pkg_apis_application_v1alpha1_ApplicationSetSpec(ref common.Referenc
 							Ref: ref("github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetSyncPolicy"),
 						},
 					},
+					"strategy": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetStrategy"),
+						},
+					},
 				},
 				Required: []string{"generators", "template"},
 			},
 		},
 		Dependencies: []string{
-			"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetGenerator", "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetSyncPolicy", "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetTemplate"},
+			"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetGenerator", "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetStrategy", "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetSyncPolicy", "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetTemplate"},
 	}
 }
 
@@ -990,11 +1150,50 @@ func schema_pkg_apis_application_v1alpha1_ApplicationSetStatus(ref common.Refere
 							},
 						},
 					},
+					"applicationStatus": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetApplicationStatus"),
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetCondition"},
+			"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetApplicationStatus", "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetCondition"},
+	}
+}
+
+func schema_pkg_apis_application_v1alpha1_ApplicationSetStrategy(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ApplicationSetStrategy configures how generated Applications are updated in sequence.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"rollingUpdate": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRollingUpdateStrategy"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRollingUpdateStrategy"},
 	}
 }
 

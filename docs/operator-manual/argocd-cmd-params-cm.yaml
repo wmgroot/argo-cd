@@ -58,6 +58,9 @@ data:
   # Cache expiration default (default 24h0m0s)
   controller.default.cache.expiration: "24h0m0s"
 
+  # Enables use of the Progressive Rollouts capability for ApplicationSets
+  applicationset.enable.progressive.rollouts: "false"
+
   ## Server properties
   # Run server without TLS
   server.insecure: "false"
