@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	crtclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -25,6 +26,7 @@ import (
 	"github.com/argoproj/argo-cd/v2/applicationset/generators"
 	"github.com/argoproj/argo-cd/v2/applicationset/utils"
 	argov1alpha1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/gitops-engine/pkg/health"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	kubefake "k8s.io/client-go/kubernetes/fake"
@@ -1925,4 +1927,1409 @@ func TestSetApplicationSetStatusCondition(t *testing.T) {
 	assert.Nil(t, err)
 
 	assert.Len(t, appSet.Status.Conditions, 3)
+}
+
+func TestSetApplicationSetApplicationStatus(t *testing.T) {
+	scheme := runtime.NewScheme()
+	err := argoprojiov1alpha1.AddToScheme(scheme)
+	assert.Nil(t, err)
+	err = argov1alpha1.AddToScheme(scheme)
+	assert.Nil(t, err)
+
+	appSet := argoprojiov1alpha1.ApplicationSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "name",
+			Namespace: "argocd",
+		},
+		Spec: argoprojiov1alpha1.ApplicationSetSpec{
+			Generators: []argoprojiov1alpha1.ApplicationSetGenerator{
+				{List: &argoprojiov1alpha1.ListGenerator{
+					Elements: []apiextensionsv1.JSON{{
+						Raw: []byte(`{"cluster": "my-cluster","url": "https://kubernetes.default.svc"}`),
+					}},
+				}},
+			},
+			Template: argoprojiov1alpha1.ApplicationSetTemplate{},
+		},
+	}
+
+	appStatuses := []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+		argoprojiov1alpha1.ApplicationSetApplicationStatus{
+			Application:        "my-application",
+			LastTransitionTime: &metav1.Time{},
+			Message:            "testing SetApplicationSetApplicationStatus to Healthy",
+			ObservedGeneration: 1,
+			Status:             "Healthy",
+		},
+	}
+
+	kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
+	argoDBMock := dbmocks.ArgoDB{}
+	argoObjs := []runtime.Object{}
+
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&appSet).Build()
+
+	r := ApplicationSetReconciler{
+		Log:      ctrl.Log.WithName("controllers").WithName("ApplicationSet"),
+		Client:   client,
+		Scheme:   scheme,
+		Renderer: &utils.Render{},
+		Recorder: record.NewFakeRecorder(1),
+		Generators: map[string]generators.Generator{
+			"List": generators.NewListGenerator(),
+		},
+		ArgoDB:           &argoDBMock,
+		ArgoAppClientset: appclientset.NewSimpleClientset(argoObjs...),
+		KubeClientset:    kubeclientset,
+	}
+
+	err = r.setApplicationSetApplicationStatus(context.TODO(), &appSet, appStatuses)
+	assert.Nil(t, err)
+
+	assert.Len(t, appSet.Status.ApplicationStatus, 1)
+}
+
+func TestBuildAppDependencyList(t *testing.T) {
+
+	scheme := runtime.NewScheme()
+	err := argoprojiov1alpha1.AddToScheme(scheme)
+	assert.Nil(t, err)
+
+	err = argov1alpha1.AddToScheme(scheme)
+	assert.Nil(t, err)
+
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	for _, cc := range []struct {
+		name            string
+		appSet          argoprojiov1alpha1.ApplicationSet
+		apps            []argov1alpha1.Application
+		expectedList    [][]string
+		expectedStepMap map[string]int
+	}{
+		{
+			name: "handles an empty set of applications and no strategy",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{},
+			},
+			apps:            []argov1alpha1.Application{},
+			expectedList:    [][]string{},
+			expectedStepMap: map[string]int{},
+		},
+		{
+			name: "handles an empty set of applications and ignores AllAtOnce strategy",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{
+					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
+						Type: "AllAtOnce",
+					},
+				},
+			},
+			apps:            []argov1alpha1.Application{},
+			expectedList:    [][]string{},
+			expectedStepMap: map[string]int{},
+		},
+		{
+			name: "handles an empty set of applications with good selectors",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{
+					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+						RollingUpdate: &argoprojiov1alpha1.ApplicationSetRollingUpdateStrategy{
+							Steps: []argoprojiov1alpha1.ApplicationSetRollingUpdateStep{
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{
+										{
+											Key:      "env",
+											Operator: "In",
+											Values: []string{
+												"dev",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{},
+			expectedList: [][]string{
+				{},
+			},
+			expectedStepMap: map[string]int{},
+		},
+		{
+			name: "handles selecting 1 application with 1 selector",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{
+					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+						RollingUpdate: &argoprojiov1alpha1.ApplicationSetRollingUpdateStrategy{
+							Steps: []argoprojiov1alpha1.ApplicationSetRollingUpdateStep{
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{
+										{
+											Key:      "env",
+											Operator: "In",
+											Values: []string{
+												"dev",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app-dev",
+						Labels: map[string]string{
+							"env": "dev",
+						},
+					},
+				},
+			},
+			expectedList: [][]string{
+				{"app-dev"},
+			},
+			expectedStepMap: map[string]int{
+				"app-dev": 0,
+			},
+		},
+		{
+			name: "handles selectors that select no applications",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{
+					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+						RollingUpdate: &argoprojiov1alpha1.ApplicationSetRollingUpdateStrategy{
+							Steps: []argoprojiov1alpha1.ApplicationSetRollingUpdateStep{
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{
+										{
+											Key:      "env",
+											Operator: "In",
+											Values: []string{
+												"dev",
+											},
+										},
+									},
+								},
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{
+										{
+											Key:      "env",
+											Operator: "In",
+											Values: []string{
+												"qa",
+											},
+										},
+									},
+								},
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{
+										{
+											Key:      "env",
+											Operator: "In",
+											Values: []string{
+												"prod",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app-qa",
+						Labels: map[string]string{
+							"env": "qa",
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app-prod",
+						Labels: map[string]string{
+							"env": "prod",
+						},
+					},
+				},
+			},
+			expectedList: [][]string{
+				{},
+				{"app-qa"},
+				{"app-prod"},
+			},
+			expectedStepMap: map[string]int{
+				"app-qa":   1,
+				"app-prod": 2,
+			},
+		},
+		{
+			name: "handles multiple selectors in the same matchExpression",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{
+					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+						RollingUpdate: &argoprojiov1alpha1.ApplicationSetRollingUpdateStrategy{
+							Steps: []argoprojiov1alpha1.ApplicationSetRollingUpdateStep{
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{
+										{
+											Key:      "region",
+											Operator: "In",
+											Values: []string{
+												"us-east-2",
+											},
+										},
+										{
+											Key:      "env",
+											Operator: "In",
+											Values: []string{
+												"qa",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app-qa1",
+						Labels: map[string]string{
+							"env": "qa",
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app-qa2",
+						Labels: map[string]string{
+							"env":    "qa",
+							"region": "us-east-2",
+						},
+					},
+				},
+			},
+			expectedList: [][]string{
+				{"app-qa2"},
+			},
+			expectedStepMap: map[string]int{
+				"app-qa2": 0,
+			},
+		},
+		{
+			name: "handles multiple values in the same matchExpression",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{
+					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+						RollingUpdate: &argoprojiov1alpha1.ApplicationSetRollingUpdateStrategy{
+							Steps: []argoprojiov1alpha1.ApplicationSetRollingUpdateStep{
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{
+										{
+											Key:      "env",
+											Operator: "In",
+											Values: []string{
+												"qa",
+												"prod",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app-dev",
+						Labels: map[string]string{
+							"env": "dev",
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app-qa",
+						Labels: map[string]string{
+							"env": "qa",
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app-prod",
+						Labels: map[string]string{
+							"env":    "prod",
+							"region": "us-east-2",
+						},
+					},
+				},
+			},
+			expectedList: [][]string{
+				{"app-qa", "app-prod"},
+			},
+			expectedStepMap: map[string]int{
+				"app-qa":   0,
+				"app-prod": 0,
+			},
+		},
+	} {
+
+		t.Run(cc.name, func(t *testing.T) {
+
+			kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
+			argoDBMock := dbmocks.ArgoDB{}
+			argoObjs := []runtime.Object{}
+
+			r := ApplicationSetReconciler{
+				Client:           client,
+				Scheme:           scheme,
+				Recorder:         record.NewFakeRecorder(1),
+				Generators:       map[string]generators.Generator{},
+				ArgoDB:           &argoDBMock,
+				ArgoAppClientset: appclientset.NewSimpleClientset(argoObjs...),
+				KubeClientset:    kubeclientset,
+			}
+
+			appDependencyList, appStepMap, err := r.buildAppDependencyList(context.TODO(), cc.appSet, cc.apps)
+			assert.Equal(t, err, nil, "expected no errors, but errors occured")
+			assert.Equal(t, cc.expectedList, appDependencyList, "expected appDependencyList did not match actual")
+			assert.Equal(t, cc.expectedStepMap, appStepMap, "expected appStepMap did not match actual")
+		})
+	}
+}
+
+func TestBuildAppSyncMap(t *testing.T) {
+
+	scheme := runtime.NewScheme()
+	err := argoprojiov1alpha1.AddToScheme(scheme)
+	assert.Nil(t, err)
+
+	err = argov1alpha1.AddToScheme(scheme)
+	assert.Nil(t, err)
+
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	for _, cc := range []struct {
+		name              string
+		appSet            argoprojiov1alpha1.ApplicationSet
+		appDependencyList [][]string
+		expectedMap       map[string]bool
+	}{
+		{
+			name: "handles an empty app dependency list",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{},
+			},
+			appDependencyList: [][]string{},
+			expectedMap:       map[string]bool{},
+		},
+		{
+			name: "handles two applications with no statuses",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{},
+			},
+			appDependencyList: [][]string{
+				{"app1"},
+				{"app2"},
+			},
+			expectedMap: map[string]bool{
+				"app1": true,
+				"app2": false,
+			},
+		},
+		{
+			name: "handles applications after an empty selection",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{},
+			},
+			appDependencyList: [][]string{
+				{},
+				{"app1", "app2"},
+			},
+			expectedMap: map[string]bool{
+				"app1": true,
+				"app2": true,
+			},
+		},
+		{
+			name: "handles applications that are healthy and match the appset generation",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "name",
+					Namespace:  "argocd",
+					Generation: 1,
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:        "app1",
+							ObservedGeneration: 1,
+							Status:             "Healthy",
+						},
+						{
+							Application:        "app2",
+							ObservedGeneration: 1,
+							Status:             "Healthy",
+						},
+					},
+				},
+			},
+			appDependencyList: [][]string{
+				{"app1"},
+				{"app2"},
+			},
+			expectedMap: map[string]bool{
+				"app1": true,
+				"app2": true,
+			},
+		},
+		{
+			name: "handles applications that are healthy but out of date",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "name",
+					Namespace:  "argocd",
+					Generation: 2,
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:        "app1",
+							ObservedGeneration: 1,
+							Status:             "Healthy",
+						},
+						{
+							Application:        "app2",
+							ObservedGeneration: 1,
+							Status:             "Healthy",
+						},
+					},
+				},
+			},
+			appDependencyList: [][]string{
+				{"app1"},
+				{"app2"},
+			},
+			expectedMap: map[string]bool{
+				"app1": true,
+				"app2": false,
+			},
+		},
+		{
+			name: "handles applications that are up to date, but not healthy",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "name",
+					Namespace:  "argocd",
+					Generation: 2,
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:        "app1",
+							ObservedGeneration: 2,
+							Status:             "Progressing",
+						},
+						{
+							Application:        "app2",
+							ObservedGeneration: 2,
+							Status:             "Progressing",
+						},
+					},
+				},
+			},
+			appDependencyList: [][]string{
+				{"app1"},
+				{"app2"},
+			},
+			expectedMap: map[string]bool{
+				"app1": true,
+				"app2": false,
+			},
+		},
+		{
+			name: "handles a lot of applications",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "name",
+					Namespace:  "argocd",
+					Generation: 2,
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:        "app1",
+							ObservedGeneration: 2,
+							Status:             "Healthy",
+						},
+						{
+							Application:        "app2",
+							ObservedGeneration: 2,
+							Status:             "Healthy",
+						},
+						{
+							Application:        "app4",
+							ObservedGeneration: 2,
+							Status:             "Healthy",
+						},
+						{
+							Application:        "app7",
+							ObservedGeneration: 2,
+							Status:             "Healthy",
+						},
+					},
+				},
+			},
+			appDependencyList: [][]string{
+				{"app1", "app4", "app7"},
+				{"app2", "app5", "app8"},
+				{"app3", "app6", "app9"},
+			},
+			expectedMap: map[string]bool{
+				"app1": true,
+				"app2": true,
+				"app3": false,
+				"app4": true,
+				"app5": true,
+				"app6": false,
+				"app7": true,
+				"app8": true,
+				"app9": false,
+			},
+		},
+	} {
+
+		t.Run(cc.name, func(t *testing.T) {
+
+			kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
+			argoDBMock := dbmocks.ArgoDB{}
+			argoObjs := []runtime.Object{}
+
+			r := ApplicationSetReconciler{
+				Client:           client,
+				Scheme:           scheme,
+				Recorder:         record.NewFakeRecorder(1),
+				Generators:       map[string]generators.Generator{},
+				ArgoDB:           &argoDBMock,
+				ArgoAppClientset: appclientset.NewSimpleClientset(argoObjs...),
+				KubeClientset:    kubeclientset,
+			}
+
+			appSyncMap, err := r.buildAppSyncMap(context.TODO(), cc.appSet, cc.appDependencyList)
+			assert.Equal(t, err, nil, "expected no errors, but errors occured")
+			assert.Equal(t, cc.expectedMap, appSyncMap, "expected appSyncMap did not match actual")
+		})
+	}
+}
+
+func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
+
+	scheme := runtime.NewScheme()
+	err := argoprojiov1alpha1.AddToScheme(scheme)
+	assert.Nil(t, err)
+
+	err = argov1alpha1.AddToScheme(scheme)
+	assert.Nil(t, err)
+
+	for _, cc := range []struct {
+		name              string
+		appSet            argoprojiov1alpha1.ApplicationSet
+		apps              []argov1alpha1.Application
+		expectedAppStatus []argoprojiov1alpha1.ApplicationSetApplicationStatus
+	}{
+		{
+			name: "handles a nil list of statuses and no applications",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				// Status: argoprojiov1alpha1.ApplicationSetStatus{
+				// 	ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{},
+				// },
+			},
+			apps:              []argov1alpha1.Application{},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{},
+		},
+		{
+			name: "handles a nil list of statuses with a healthy application",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app1",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Health: argov1alpha1.HealthStatus{
+							Status: health.HealthStatusHealthy,
+						},
+					},
+				},
+			},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:        "app1",
+					Message:            "No Application status found, defaulting status to Waiting.",
+					ObservedGeneration: 0,
+					Status:             "Waiting",
+				},
+			},
+		},
+		{
+			name: "handles an empty list of statuses with a healthy application",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app1",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Health: argov1alpha1.HealthStatus{
+							Status: health.HealthStatusHealthy,
+						},
+					},
+				},
+			},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:        "app1",
+					Message:            "No Application status found, defaulting status to Waiting.",
+					ObservedGeneration: 0,
+					Status:             "Waiting",
+				},
+			},
+		},
+		{
+			name: "progresses an out of date healthy application to waiting",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "name",
+					Namespace:  "argocd",
+					Generation: 2,
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:        "app1",
+							Message:            "",
+							ObservedGeneration: 1,
+							Status:             "Healthy",
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app1",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Health: argov1alpha1.HealthStatus{
+							Status: health.HealthStatusHealthy,
+						},
+					},
+				},
+			},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:        "app1",
+					Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
+					ObservedGeneration: 1,
+					Status:             "Waiting",
+				},
+			},
+		},
+		{
+			name: "progresses a pending application to progressing",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "name",
+					Namespace:  "argocd",
+					Generation: 2,
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:        "app1",
+							Message:            "",
+							ObservedGeneration: 2,
+							Status:             "Pending",
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app1",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Health: argov1alpha1.HealthStatus{
+							Status: health.HealthStatusProgressing,
+						},
+					},
+				},
+			},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:        "app1",
+					Message:            "Application resource became Progressing, updating status from Pending to Progressing.",
+					ObservedGeneration: 2,
+					Status:             "Progressing",
+				},
+			},
+		},
+		{
+			name: "progresses a pending application to healthy on timeout",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "name",
+					Namespace:  "argocd",
+					Generation: 2,
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:        "app1",
+							LastTransitionTime: &metav1.Time{},
+							Message:            "",
+							ObservedGeneration: 2,
+							Status:             "Pending",
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app1",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Health: argov1alpha1.HealthStatus{
+							Status: health.HealthStatusHealthy,
+						},
+					},
+				},
+			},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:        "app1",
+					Message:            "Application Pending status timed out while waiting to become Progressing, reset status to Healthy.",
+					ObservedGeneration: 2,
+					Status:             "Healthy",
+				},
+			},
+		},
+		{
+			name: "progresses a progressing application to healthy",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "name",
+					Namespace:  "argocd",
+					Generation: 2,
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:        "app1",
+							Message:            "",
+							ObservedGeneration: 2,
+							Status:             "Progressing",
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app1",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Health: argov1alpha1.HealthStatus{
+							Status: health.HealthStatusHealthy,
+						},
+					},
+				},
+			},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:        "app1",
+					Message:            "Application resource became Healthy, updating status from Progressing to Healthy.",
+					ObservedGeneration: 2,
+					Status:             "Healthy",
+				},
+			},
+		},
+	} {
+
+		t.Run(cc.name, func(t *testing.T) {
+
+			kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
+			argoDBMock := dbmocks.ArgoDB{}
+			argoObjs := []runtime.Object{}
+
+			client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&cc.appSet).Build()
+
+			r := ApplicationSetReconciler{
+				Client:           client,
+				Scheme:           scheme,
+				Recorder:         record.NewFakeRecorder(1),
+				Generators:       map[string]generators.Generator{},
+				ArgoDB:           &argoDBMock,
+				ArgoAppClientset: appclientset.NewSimpleClientset(argoObjs...),
+				KubeClientset:    kubeclientset,
+			}
+
+			appStatuses, err := r.updateApplicationSetApplicationStatus(context.TODO(), &cc.appSet, cc.apps)
+
+			// opt out of testing the LastTransitionTime is accurate
+			for i := range appStatuses {
+				appStatuses[i].LastTransitionTime = nil
+			}
+
+			assert.Equal(t, err, nil, "expected no errors, but errors occured")
+			assert.Equal(t, cc.expectedAppStatus, appStatuses, "expected appStatuses did not match actual")
+		})
+	}
+}
+
+func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
+
+	scheme := runtime.NewScheme()
+	err := argoprojiov1alpha1.AddToScheme(scheme)
+	assert.Nil(t, err)
+
+	err = argov1alpha1.AddToScheme(scheme)
+	assert.Nil(t, err)
+
+	for _, cc := range []struct {
+		name              string
+		appSet            argoprojiov1alpha1.ApplicationSet
+		appSyncMap        map[string]bool
+		appStepMap        map[string]int
+		expectedAppStatus []argoprojiov1alpha1.ApplicationSetApplicationStatus
+	}{
+		{
+			name: "handles an empty appSync and appStepMap",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{
+					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+						RollingUpdate: &argoprojiov1alpha1.ApplicationSetRollingUpdateStrategy{
+							Steps: []argoprojiov1alpha1.ApplicationSetRollingUpdateStep{
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{},
+								},
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{},
+								},
+							},
+						},
+					},
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{},
+				},
+			},
+			appSyncMap:        map[string]bool{},
+			appStepMap:        map[string]int{},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{},
+		},
+		{
+			name: "handles an empty strategy",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{},
+				},
+			},
+			appSyncMap:        map[string]bool{},
+			appStepMap:        map[string]int{},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{},
+		},
+		{
+			name: "handles an empty rollingUpdate",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{
+					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{},
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{},
+				},
+			},
+			appSyncMap:        map[string]bool{},
+			appStepMap:        map[string]int{},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{},
+		},
+		{
+			name: "handles an appSyncMap with no existing statuses",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{},
+				},
+			},
+			appSyncMap: map[string]bool{
+				"app1": true,
+				"app2": false,
+			},
+			appStepMap: map[string]int{
+				"app1": 0,
+				"app2": 1,
+			},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{},
+		},
+		{
+			name: "handles updating a status from Waiting to Pending",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "name",
+					Namespace:  "argocd",
+					Generation: 2,
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{
+					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+						RollingUpdate: &argoprojiov1alpha1.ApplicationSetRollingUpdateStrategy{
+							Steps: []argoprojiov1alpha1.ApplicationSetRollingUpdateStep{
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{},
+								},
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{},
+								},
+							},
+						},
+					},
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:        "app1",
+							Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							ObservedGeneration: 1,
+							Status:             "Waiting",
+						},
+					},
+				},
+			},
+			appSyncMap: map[string]bool{
+				"app1": true,
+			},
+			appStepMap: map[string]int{
+				"app1": 0,
+			},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:        "app1",
+					LastTransitionTime: nil,
+					Message:            "Application moved to Pending status, watching for the Application resource to start Progressing.",
+					ObservedGeneration: 2,
+					Status:             "Pending",
+				},
+			},
+		},
+		{
+			name: "does not update a status if appSyncMap is false",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "name",
+					Namespace:  "argocd",
+					Generation: 2,
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{
+					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+						RollingUpdate: &argoprojiov1alpha1.ApplicationSetRollingUpdateStrategy{
+							Steps: []argoprojiov1alpha1.ApplicationSetRollingUpdateStep{
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{},
+								},
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{},
+								},
+							},
+						},
+					},
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:        "app1",
+							Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							ObservedGeneration: 1,
+							Status:             "Waiting",
+						},
+					},
+				},
+			},
+			appSyncMap: map[string]bool{
+				"app1": false,
+			},
+			appStepMap: map[string]int{
+				"app1": 0,
+			},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:        "app1",
+					LastTransitionTime: nil,
+					Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
+					ObservedGeneration: 1,
+					Status:             "Waiting",
+				},
+			},
+		},
+		{
+			name: "does not update a status if status is not pending",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "name",
+					Namespace:  "argocd",
+					Generation: 2,
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{
+					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+						RollingUpdate: &argoprojiov1alpha1.ApplicationSetRollingUpdateStrategy{
+							Steps: []argoprojiov1alpha1.ApplicationSetRollingUpdateStep{
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{},
+								},
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{},
+								},
+							},
+						},
+					},
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:        "app1",
+							Message:            "Application Pending status timed out while waiting to become Progressing, reset status to Healthy.",
+							ObservedGeneration: 1,
+							Status:             "Healthy",
+						},
+					},
+				},
+			},
+			appSyncMap: map[string]bool{
+				"app1": true,
+			},
+			appStepMap: map[string]int{
+				"app1": 0,
+			},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:        "app1",
+					LastTransitionTime: nil,
+					Message:            "Application Pending status timed out while waiting to become Progressing, reset status to Healthy.",
+					ObservedGeneration: 1,
+					Status:             "Healthy",
+				},
+			},
+		},
+		{
+			name: "does not update a status if maxUpdate has already been reached",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "name",
+					Namespace:  "argocd",
+					Generation: 2,
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{
+					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+						RollingUpdate: &argoprojiov1alpha1.ApplicationSetRollingUpdateStrategy{
+							Steps: []argoprojiov1alpha1.ApplicationSetRollingUpdateStep{
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{},
+									MaxUpdate: &intstr.IntOrString{
+										Type:   intstr.Int,
+										IntVal: 3,
+									},
+								},
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{},
+								},
+							},
+						},
+					},
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:        "app1",
+							Message:            "Application resource became Progressing, updating status from Pending to Progressing.",
+							ObservedGeneration: 2,
+							Status:             "Progressing",
+						},
+						{
+							Application:        "app2",
+							Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							ObservedGeneration: 1,
+							Status:             "Waiting",
+						},
+						{
+							Application:        "app3",
+							Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							ObservedGeneration: 1,
+							Status:             "Waiting",
+						},
+						{
+							Application:        "app4",
+							Message:            "Application moved to Pending status, watching for the Application resource to start Progressing.",
+							ObservedGeneration: 2,
+							Status:             "Pending",
+						},
+					},
+				},
+			},
+			appSyncMap: map[string]bool{
+				"app1": true,
+				"app2": true,
+				"app3": true,
+				"app4": true,
+			},
+			appStepMap: map[string]int{
+				"app1": 0,
+				"app2": 0,
+				"app3": 0,
+				"app4": 0,
+			},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:        "app1",
+					LastTransitionTime: nil,
+					Message:            "Application resource became Progressing, updating status from Pending to Progressing.",
+					ObservedGeneration: 2,
+					Status:             "Progressing",
+				},
+				{
+					Application:        "app2",
+					LastTransitionTime: nil,
+					Message:            "Application moved to Pending status, watching for the Application resource to start Progressing.",
+					ObservedGeneration: 2,
+					Status:             "Pending",
+				},
+				{
+					Application:        "app3",
+					LastTransitionTime: nil,
+					Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
+					ObservedGeneration: 1,
+					Status:             "Waiting",
+				},
+				{
+					Application:        "app4",
+					LastTransitionTime: nil,
+					Message:            "Application moved to Pending status, watching for the Application resource to start Progressing.",
+					ObservedGeneration: 2,
+					Status:             "Pending",
+				},
+			},
+		},
+		{
+			name: "handles maxUpdate set to percentage string",
+			appSet: argoprojiov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "name",
+					Namespace:  "argocd",
+					Generation: 2,
+				},
+				Spec: argoprojiov1alpha1.ApplicationSetSpec{
+					Strategy: &argoprojiov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+						RollingUpdate: &argoprojiov1alpha1.ApplicationSetRollingUpdateStrategy{
+							Steps: []argoprojiov1alpha1.ApplicationSetRollingUpdateStep{
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{},
+									MaxUpdate: &intstr.IntOrString{
+										Type:   intstr.String,
+										StrVal: "50%",
+									},
+								},
+								{
+									MatchExpressions: []argoprojiov1alpha1.ApplicationMatchExpression{},
+								},
+							},
+						},
+					},
+				},
+				Status: argoprojiov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:        "app1",
+							Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							ObservedGeneration: 1,
+							Status:             "Waiting",
+						},
+						{
+							Application:        "app2",
+							Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							ObservedGeneration: 1,
+							Status:             "Waiting",
+						},
+						{
+							Application:        "app3",
+							Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							ObservedGeneration: 1,
+							Status:             "Waiting",
+						},
+					},
+				},
+			},
+			appSyncMap: map[string]bool{
+				"app1": true,
+				"app2": true,
+				"app3": true,
+			},
+			appStepMap: map[string]int{
+				"app1": 0,
+				"app2": 0,
+				"app3": 0,
+			},
+			expectedAppStatus: []argoprojiov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:        "app1",
+					LastTransitionTime: nil,
+					Message:            "Application moved to Pending status, watching for the Application resource to start Progressing.",
+					ObservedGeneration: 2,
+					Status:             "Pending",
+				},
+				{
+					Application:        "app2",
+					LastTransitionTime: nil,
+					Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
+					ObservedGeneration: 1,
+					Status:             "Waiting",
+				},
+				{
+					Application:        "app3",
+					LastTransitionTime: nil,
+					Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
+					ObservedGeneration: 1,
+					Status:             "Waiting",
+				},
+			},
+		},
+	} {
+
+		t.Run(cc.name, func(t *testing.T) {
+
+			kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
+			argoDBMock := dbmocks.ArgoDB{}
+			argoObjs := []runtime.Object{}
+
+			client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&cc.appSet).Build()
+
+			r := ApplicationSetReconciler{
+				Client:           client,
+				Scheme:           scheme,
+				Recorder:         record.NewFakeRecorder(1),
+				Generators:       map[string]generators.Generator{},
+				ArgoDB:           &argoDBMock,
+				ArgoAppClientset: appclientset.NewSimpleClientset(argoObjs...),
+				KubeClientset:    kubeclientset,
+			}
+
+			appStatuses, err := r.updateApplicationSetApplicationStatusProgress(context.TODO(), &cc.appSet, cc.appSyncMap, cc.appStepMap)
+
+			// opt out of testing the LastTransitionTime is accurate
+			for i := range appStatuses {
+				appStatuses[i].LastTransitionTime = nil
+			}
+
+			assert.Equal(t, err, nil, "expected no errors, but errors occured")
+			assert.Equal(t, cc.expectedAppStatus, appStatuses, "expected appStatuses did not match actual")
+		})
+	}
 }

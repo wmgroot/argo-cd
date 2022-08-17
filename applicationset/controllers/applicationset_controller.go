@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -133,6 +134,36 @@ func (r *ApplicationSetReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{RequeueAfter: ReconcileRequeueOnValidationError}, nil
 	}
 
+	applications, err := r.getCurrentApplications(ctx, applicationSetInfo)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	_, err = r.updateApplicationSetApplicationStatus(ctx, &applicationSetInfo, applications)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	appDependencyList, appStepMap, err := r.buildAppDependencyList(ctx, applicationSetInfo, desiredApplications)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	appSyncMap, err := r.buildAppSyncMap(ctx, applicationSetInfo, appDependencyList)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	_, err = r.updateApplicationSetApplicationStatusProgress(ctx, &applicationSetInfo, appSyncMap, appStepMap)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	_, err = r.updateApplicationSetApplicationStatusConditions(ctx, &applicationSetInfo)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	var validApps []argov1alpha1.Application
 	for i := range desiredApplications {
 		if validateErrors[i] == nil {
@@ -159,6 +190,21 @@ func (r *ApplicationSetReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				Status:  argoprojiov1alpha1.ApplicationSetConditionStatusTrue,
 			}, parametersGenerated,
 		)
+	}
+
+	// filter down valid applications if rollout strategy is enabled
+	strategy := applicationSetInfo.Spec.Strategy
+	if strategy != nil && strategy.Type == "RollingUpdate" {
+		var rolloutApps []argov1alpha1.Application
+		for i := range validApps {
+			// check appSyncMap to determine which Applications are ready to be updated and which should be skipped
+			if !appSyncMap[validApps[i].Name] {
+				log.Infof("skipping application generation, waiting for previous rollouts to complete before updating: %v", validApps[i].Name)
+				continue
+			}
+			rolloutApps = append(rolloutApps, validApps[i])
+		}
+		validApps = rolloutApps
 	}
 
 	if r.Policy.Update() {
@@ -343,6 +389,65 @@ func (r *ApplicationSetReconciler) setApplicationSetStatusCondition(ctx context.
 		err := r.Client.Status().Update(ctx, applicationSet)
 		if err != nil && !apierr.IsNotFound(err) {
 			return fmt.Errorf("unable to set application set condition: %v", err)
+		}
+	}
+
+	return nil
+}
+
+func findApplicationStatusIndex(appStatuses []argoprojiov1alpha1.ApplicationSetApplicationStatus, application string) int {
+	for i := range appStatuses {
+		if appStatuses[i].Application == application {
+			return i
+		}
+	}
+	return -1
+}
+
+func (r *ApplicationSetReconciler) setApplicationSetApplicationStatus(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet, applicationStatuses []argoprojiov1alpha1.ApplicationSetApplicationStatus) error {
+
+	needToUpdateStatus := false
+	for i := range applicationStatuses {
+		appStatus := applicationStatuses[i]
+		idx := findApplicationStatusIndex(applicationSet.Status.ApplicationStatus, appStatus.Application)
+		if idx == -1 {
+			needToUpdateStatus = true
+			break
+		}
+		currentStatus := applicationSet.Status.ApplicationStatus[idx]
+		if currentStatus.Message != appStatus.Message || currentStatus.Status != appStatus.Status || currentStatus.ObservedGeneration != appStatus.ObservedGeneration {
+			needToUpdateStatus = true
+			break
+		}
+	}
+
+	if needToUpdateStatus {
+		// fetch updated Application Set object before updating it
+		namespacedName := types.NamespacedName{Namespace: applicationSet.Namespace, Name: applicationSet.Name}
+		if err := r.Get(ctx, namespacedName, applicationSet); err != nil {
+			if client.IgnoreNotFound(err) != nil {
+				return nil
+			}
+			return fmt.Errorf("error fetching updated application set: %v", err)
+		}
+
+		for i := range applicationStatuses {
+			applicationSet.Status.SetApplicationStatus(applicationStatuses[i])
+		}
+
+		// Update the newly fetched object with new set of ApplicationStatus
+		err := r.Client.Status().Update(ctx, applicationSet)
+		if err != nil {
+
+			log.Errorf("unable to set application set status: %v", err)
+			return fmt.Errorf("unable to set application set status: %v", err)
+		}
+
+		if err := r.Get(ctx, namespacedName, applicationSet); err != nil {
+			if client.IgnoreNotFound(err) != nil {
+				return nil
+			}
+			return fmt.Errorf("error fetching updated application set: %v", err)
 		}
 	}
 
@@ -719,6 +824,280 @@ func (r *ApplicationSetReconciler) removeFinalizerOnInvalidDestination(ctx conte
 	}
 
 	return nil
+}
+
+// this list tracks which Applications belong to each RollingUpdate step
+func (r *ApplicationSetReconciler) buildAppDependencyList(ctx context.Context, applicationSet argoprojiov1alpha1.ApplicationSet, applications []argov1alpha1.Application) ([][]string, map[string]int, error) {
+
+	if applicationSet.Spec.Strategy == nil || applicationSet.Spec.Strategy.RollingUpdate == nil {
+		return [][]string{}, map[string]int{}, nil
+	}
+	steps := applicationSet.Spec.Strategy.RollingUpdate.Steps
+
+	appDependencyList := make([][]string, 0)
+	for range steps {
+		appDependencyList = append(appDependencyList, make([]string, 0))
+	}
+
+	appStepMap := map[string]int{}
+
+	// use applicationLabelSelectors to filter generated Applications into steps and status by name
+	for _, app := range applications {
+		for i, step := range steps {
+
+			selected := true // default to true, assuming the current Application is a match for the given step matchExpression
+			for _, matchExpression := range step.MatchExpressions {
+
+				if val, ok := app.Labels[matchExpression.Key]; ok {
+					if matchExpression.Operator == "In" {
+						valueMatched := false
+						for _, value := range matchExpression.Values {
+							if val == value {
+								valueMatched = true
+								break
+							}
+						}
+						// none of the matchExpression values was a match with the Applications labels
+						if !valueMatched {
+							selected = false
+							break
+						}
+						// handle invalid operator selection
+					} else {
+						log.Warnf("skipping AppSet rollingUpdate step Application selection for '%v', invalid matchExpression operate provided: '%v' ", applicationSet.Name, matchExpression.Operator)
+						selected = false
+						break
+					}
+					// no matching label key found for the current Application
+				} else {
+					selected = false
+					break
+				}
+			}
+
+			if selected {
+				appDependencyList[i] = append(appDependencyList[i], app.Name)
+				if val, ok := appStepMap[app.Name]; ok {
+					log.Warnf("AppSet '%v' has a invalid matchExpression that selects Application '%v' label twice, in steps %v and %v", applicationSet.Name, app.Name, val, i)
+				} else {
+					appStepMap[app.Name] = i
+				}
+			}
+		}
+	}
+
+	return appDependencyList, appStepMap, nil
+}
+
+// this map is used to determine which stage of Applications are ready to be updated in the reconciler loop
+func (r *ApplicationSetReconciler) buildAppSyncMap(ctx context.Context, applicationSet argoprojiov1alpha1.ApplicationSet, appDependencyList [][]string) (map[string]bool, error) {
+	appSyncMap := map[string]bool{}
+	syncEnabled := true
+
+	// healthy stages and the first non-healthy stage should have sync enabled
+	// every stage after should have sync disabled
+
+	for i := range appDependencyList {
+		// set the syncEnabled boolean for every Application in the current step
+		for _, appName := range appDependencyList[i] {
+			appSyncMap[appName] = syncEnabled
+		}
+
+		// detect if we need to halt before progressing to the next step
+		for _, appName := range appDependencyList[i] {
+			idx := findApplicationStatusIndex(applicationSet.Status.ApplicationStatus, appName)
+			if idx == -1 {
+				// no Application status found, likely because the Application is being newly created
+				syncEnabled = false
+				break
+			}
+			appStatus := applicationSet.Status.ApplicationStatus[idx]
+			if appStatus.Status != "Healthy" || appStatus.ObservedGeneration != applicationSet.Generation {
+				syncEnabled = false
+				break
+			}
+		}
+	}
+
+	return appSyncMap, nil
+}
+
+// check the status of each Application's status and promote Applications to the next status if needed
+func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatus(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet, applications []argov1alpha1.Application) ([]argoprojiov1alpha1.ApplicationSetApplicationStatus, error) {
+
+	now := metav1.Now()
+	appStatuses := make([]argoprojiov1alpha1.ApplicationSetApplicationStatus, 0, len(applications))
+
+	for _, app := range applications {
+
+		statusString := string(app.Status.Health.Status)
+		idx := findApplicationStatusIndex(applicationSet.Status.ApplicationStatus, app.Name)
+
+		if idx == -1 {
+			// AppStatus not found, set default status of "Waiting"
+			appStatuses = append(appStatuses, argoprojiov1alpha1.ApplicationSetApplicationStatus{
+				Application:        app.Name,
+				LastTransitionTime: &now,
+				Message:            "No Application status found, defaulting status to Waiting.",
+				ObservedGeneration: applicationSet.Generation, // TODO: this should probably not be set to the current generation, maybe -1 instead?
+				Status:             "Waiting",
+			})
+		} else {
+			// we have an existing AppStatus
+			currentAppStatus := applicationSet.Status.ApplicationStatus[idx]
+
+			if currentAppStatus.ObservedGeneration < applicationSet.Generation {
+				currentAppStatus.LastTransitionTime = &now
+				currentAppStatus.Status = "Waiting"
+				currentAppStatus.Message = "Application is out of date with the current AppSet generation, setting status to Waiting."
+			}
+
+			if currentAppStatus.Status == "Pending" {
+				if statusString == "Progressing" {
+					log.Infof("Application %v has entered Progressing status, updating its ApplciationSet status to Progressing", app.Name)
+					currentAppStatus.LastTransitionTime = &now
+					currentAppStatus.Status = statusString
+					currentAppStatus.Message = "Application resource became Progressing, updating status from Pending to Progressing."
+				} else {
+					duration := now.Sub(currentAppStatus.LastTransitionTime.Time)
+					log.Infof("%v pending duration minutes = %v", app.Name, duration.Minutes())
+					// handle timeout case where Application never proceeds to "Progressing", set status back to "Healthy"
+					if duration.Minutes() > 5 {
+						log.Infof("Application %v has been in Pending status for >5min, moving back to Healthy", app.Name)
+						currentAppStatus.LastTransitionTime = &now
+						currentAppStatus.Status = "Healthy"
+						currentAppStatus.Message = "Application Pending status timed out while waiting to become Progressing, reset status to Healthy."
+					}
+				}
+			}
+
+			if currentAppStatus.Status == "Progressing" && statusString == "Healthy" {
+				log.Infof("Application %v has completed Progressing status, updating its ApplicationSet status to Healthy", app.Name)
+				currentAppStatus.LastTransitionTime = &now
+				currentAppStatus.Status = statusString
+				currentAppStatus.Message = "Application resource became Healthy, updating status from Progressing to Healthy."
+			}
+
+			appStatuses = append(appStatuses, currentAppStatus)
+		}
+	}
+
+	err := r.setApplicationSetApplicationStatus(ctx, applicationSet, appStatuses)
+	if err != nil {
+		return nil, err
+	}
+
+	return appStatuses, nil
+}
+
+// check Applications that are in Waiting status and promote them to Pending if needed
+func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusProgress(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet, appSyncMap map[string]bool, appStepMap map[string]int) ([]argoprojiov1alpha1.ApplicationSetApplicationStatus, error) {
+	now := metav1.Now()
+
+	appStatuses := make([]argoprojiov1alpha1.ApplicationSetApplicationStatus, 0, len(applicationSet.Status.ApplicationStatus))
+
+	// if we have no RollingUpdate steps, clear out the existing ApplicationStatus entries
+	if applicationSet.Spec.Strategy != nil && applicationSet.Spec.Strategy.RollingUpdate != nil {
+		updateCountMap := []int{}
+		totalCountMap := []int{}
+		for s := 0; s < len(applicationSet.Spec.Strategy.RollingUpdate.Steps); s++ {
+			updateCountMap = append(updateCountMap, 0)
+			totalCountMap = append(totalCountMap, 0)
+		}
+
+		// populate updateCountMap with counts of existing Pending and Progressing Applications
+		for _, appStatus := range applicationSet.Status.ApplicationStatus {
+			totalCountMap[appStepMap[appStatus.Application]] += 1
+			if appStatus.ObservedGeneration == applicationSet.Generation && (appStatus.Status == "Pending" || appStatus.Status == "Progressing") {
+				updateCountMap[appStepMap[appStatus.Application]] += 1
+			}
+		}
+
+		for _, appStatus := range applicationSet.Status.ApplicationStatus {
+
+			maxUpdateAllowed := true
+			maxUpdate := applicationSet.Spec.Strategy.RollingUpdate.Steps[appStepMap[appStatus.Application]].MaxUpdate
+
+			// allow any updates if maxUpdate is unset or explicitly 0
+			if maxUpdate != nil && !(maxUpdate.Type == intstr.Int && maxUpdate.IntVal == 0) {
+				maxUpdateVal, err := intstr.GetScaledValueFromIntOrPercent(maxUpdate, totalCountMap[appStepMap[appStatus.Application]], false)
+				if err != nil {
+					log.Warnf("AppSet '%v' has a invalid maxUpdate value '%+v', ignoring maxUpdate logic for this step: %v", applicationSet.Name, maxUpdate, err)
+				}
+
+				// ensure non-zero values always floor to 1, even while rounding down
+				if maxUpdateVal == 0 {
+					maxUpdateVal = 1
+				}
+
+				if updateCountMap[appStepMap[appStatus.Application]] >= maxUpdateVal {
+					maxUpdateAllowed = false
+				}
+			}
+
+			if appStatus.Status == "Waiting" && appSyncMap[appStatus.Application] && maxUpdateAllowed {
+				log.Infof("Application %v moved to Pending status, watching for the Application to start Progressing", appStatus.Application)
+				appStatus.LastTransitionTime = &now
+				appStatus.Status = "Pending"
+				appStatus.ObservedGeneration = applicationSet.Generation
+				appStatus.Message = "Application moved to Pending status, watching for the Application resource to start Progressing."
+
+				updateCountMap[appStepMap[appStatus.Application]] += 1
+			}
+
+			appStatuses = append(appStatuses, appStatus)
+		}
+	}
+
+	err := r.setApplicationSetApplicationStatus(ctx, applicationSet, appStatuses)
+	if err != nil {
+		return nil, err
+	}
+
+	return appStatuses, nil
+}
+
+func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusConditions(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet) ([]argoprojiov1alpha1.ApplicationSetCondition, error) {
+
+	appSetProgressing := false
+	for _, appStatus := range applicationSet.Status.ApplicationStatus {
+		if appStatus.Status != "Healthy" {
+			appSetProgressing = true
+			break
+		}
+	}
+
+	appSetConditionProgressing := false
+	for _, appSetCondition := range applicationSet.Status.Conditions {
+		if appSetCondition.Type == argoprojiov1alpha1.ApplicationSetConditionRolloutProgressing && appSetCondition.Status == argoprojiov1alpha1.ApplicationSetConditionStatusTrue {
+			appSetConditionProgressing = true
+			break
+		}
+	}
+
+	if appSetProgressing && !appSetConditionProgressing {
+		_ = r.setApplicationSetStatusCondition(ctx,
+			applicationSet,
+			argoprojiov1alpha1.ApplicationSetCondition{
+				Type:    argoprojiov1alpha1.ApplicationSetConditionRolloutProgressing,
+				Message: "ApplicationSet Rollout Rollout started",
+				Reason:  argoprojiov1alpha1.ApplicationSetReasonApplicationSetModified,
+				Status:  argoprojiov1alpha1.ApplicationSetConditionStatusTrue,
+			}, false,
+		)
+	} else if !appSetProgressing && appSetConditionProgressing {
+		_ = r.setApplicationSetStatusCondition(ctx,
+			applicationSet,
+			argoprojiov1alpha1.ApplicationSetCondition{
+				Type:    argoprojiov1alpha1.ApplicationSetConditionRolloutProgressing,
+				Message: "ApplicationSet Rollout Rollout complete",
+				Reason:  argoprojiov1alpha1.ApplicationSetReasonApplicationSetRolloutComplete,
+				Status:  argoprojiov1alpha1.ApplicationSetConditionStatusFalse,
+			}, false,
+		)
+	}
+
+	return applicationSet.Status.Conditions, nil
 }
 
 var _ handler.EventHandler = &clusterSecretEventHandler{}
