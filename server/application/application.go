@@ -132,15 +132,15 @@ func NewServer(
 
 // List returns list of applications
 func (s *Server) List(ctx context.Context, q *application.ApplicationQuery) (*appv1.ApplicationList, error) {
-	labelsMap, err := labels.ConvertSelectorToLabelsMap(q.GetSelector())
+	selector, err := labels.Parse(q.GetSelector())
 	if err != nil {
-		return nil, fmt.Errorf("error converting selector to labels map: %w", err)
+		return nil, fmt.Errorf("error parsing the selector: %w", err)
 	}
 	var apps []*appv1.Application
 	if q.GetAppNamespace() == "" {
-		apps, err = s.appLister.List(labelsMap.AsSelector())
+		apps, err = s.appLister.List(selector)
 	} else {
-		apps, err = s.appLister.Applications(q.GetAppNamespace()).List(labelsMap.AsSelector())
+		apps, err = s.appLister.Applications(q.GetAppNamespace()).List(selector)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("error listing apps with selectors: %w", err)
@@ -1524,11 +1524,10 @@ func (s *Server) PodLogs(q *application.ApplicationPodLogsQuery, ws application.
 		}).Warnf(argocommon.ConfigMapPluginDeprecationWarning)
 	}
 
-	// Temporarily, logs RBAC will be enforced only if an internal var serverRBACLogEnforceEnable (representing server.rbac.log.enforce.enable env var)
+	// Logs RBAC will be enforced only if an internal var serverRBACLogEnforceEnable (representing server.rbac.log.enforce.enable env var)
 	// is defined and has a "true" value
 	// Otherwise, no RBAC enforcement for logs will take place (meaning, PodLogs will return the logs,
 	// even if there is no explicit RBAC allow, or if there is an explicit RBAC deny)
-	// In the future, logs RBAC will be always enforced and the parameter along with this check will be removed
 	serverRBACLogEnforceEnable, err := s.settingsMgr.GetServerRBACLogEnforceEnable()
 	if err != nil {
 		return fmt.Errorf("error getting RBAC log enforce enable: %w", err)
@@ -1988,13 +1987,9 @@ func (s *Server) logResourceEvent(res *appv1.ResourceNode, ctx context.Context, 
 }
 
 func (s *Server) ListResourceActions(ctx context.Context, q *application.ApplicationResourceRequest) (*application.ResourceActionsListResponse, error) {
-	res, config, _, err := s.getAppLiveResource(ctx, rbacpolicy.ActionGet, q)
+	obj, _, _, _, err := s.getUnstructuredLiveResourceOrApp(ctx, rbacpolicy.ActionGet, q)
 	if err != nil {
-		return nil, fmt.Errorf("error getting app live resource: %w", err)
-	}
-	obj, err := s.kubectl.GetResource(ctx, config, res.GroupKindVersion(), res.Name, res.Namespace)
-	if err != nil {
-		return nil, fmt.Errorf("error getting resource: %w", err)
+		return nil, err
 	}
 	resourceOverrides, err := s.settingsMgr.GetResourceOverrides()
 	if err != nil {
@@ -2011,6 +2006,34 @@ func (s *Server) ListResourceActions(ctx context.Context, q *application.Applica
 	}
 
 	return &application.ResourceActionsListResponse{Actions: actionsPtr}, nil
+}
+
+func (s *Server) getUnstructuredLiveResourceOrApp(ctx context.Context, rbacRequest string, q *application.ApplicationResourceRequest) (obj *unstructured.Unstructured, res *appv1.ResourceNode, app *appv1.Application, config *rest.Config, err error) {
+	if q.GetKind() == "Application" && q.GetGroup() == "argoproj.io" && q.GetName() == q.GetResourceName() {
+		namespace := s.appNamespaceOrDefault(q.GetAppNamespace())
+		app, err = s.appLister.Applications(namespace).Get(q.GetName())
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("error getting app by name: %w", err)
+		}
+		if err = s.enf.EnforceErr(ctx.Value("claims"), rbacpolicy.ResourceApplications, rbacRequest, app.RBACName(s.ns)); err != nil {
+			return nil, nil, nil, nil, err
+		}
+		config, err = s.getApplicationClusterConfig(ctx, app)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("error getting application cluster config: %w", err)
+		}
+		obj, err = kube.ToUnstructured(app)
+	} else {
+		res, config, app, err = s.getAppLiveResource(ctx, rbacRequest, q)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("error getting app live resource: %w", err)
+		}
+		obj, err = s.kubectl.GetResource(ctx, config, res.GroupKindVersion(), res.Name, res.Namespace)
+	}
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("error getting resource: %w", err)
+	}
+	return
 }
 
 func (s *Server) getAvailableActions(resourceOverrides map[string]appv1.ResourceOverride, obj *unstructured.Unstructured) ([]appv1.ResourceAction, error) {
@@ -2044,13 +2067,9 @@ func (s *Server) RunResourceAction(ctx context.Context, q *application.ResourceA
 		Group:        q.Group,
 	}
 	actionRequest := fmt.Sprintf("%s/%s/%s/%s", rbacpolicy.ActionAction, q.GetGroup(), q.GetKind(), q.GetAction())
-	res, config, a, err := s.getAppLiveResource(ctx, actionRequest, resourceRequest)
+	liveObj, res, a, config, err := s.getUnstructuredLiveResourceOrApp(ctx, actionRequest, resourceRequest)
 	if err != nil {
-		return nil, fmt.Errorf("error getting app live resource: %w", err)
-	}
-	liveObj, err := s.kubectl.GetResource(ctx, config, res.GroupKindVersion(), res.Name, res.Namespace)
-	if err != nil {
-		return nil, fmt.Errorf("error getting resource: %w", err)
+		return nil, err
 	}
 
 	resourceOverrides, err := s.settingsMgr.GetResourceOverrides()
@@ -2121,8 +2140,12 @@ func (s *Server) RunResourceAction(ctx context.Context, q *application.ResourceA
 		}
 	}
 
-	s.logAppEvent(a, ctx, argo.EventReasonResourceActionRan, fmt.Sprintf("ran action %s on resource %s/%s/%s", q.GetAction(), res.Group, res.Kind, res.Name))
-	s.logResourceEvent(res, ctx, argo.EventReasonResourceActionRan, fmt.Sprintf("ran action %s", q.GetAction()))
+	if res == nil {
+		s.logAppEvent(a, ctx, argo.EventReasonResourceActionRan, fmt.Sprintf("ran action %s", q.GetAction()))
+	} else {
+		s.logAppEvent(a, ctx, argo.EventReasonResourceActionRan, fmt.Sprintf("ran action %s on resource %s/%s/%s", q.GetAction(), res.Group, res.Kind, res.Name))
+		s.logResourceEvent(res, ctx, argo.EventReasonResourceActionRan, fmt.Sprintf("ran action %s", q.GetAction()))
+	}
 	return &application.ApplicationResponse{}, nil
 }
 
