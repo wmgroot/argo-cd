@@ -4197,6 +4197,24 @@
       "type": "object",
       "title": "Generic (empty) response for GPG public key CRUD requests"
     },
+    "intstrIntOrString": {
+      "description": "+protobuf=true\n+protobuf.options.(gogoproto.goproto_stringer)=false\n+k8s:openapi-gen=true",
+      "type": "object",
+      "title": "IntOrString is a type that can hold an int32 or a string.  When used in\nJSON or YAML marshalling and unmarshalling, it produces or consumes the\ninner type.  This allows you to have, for example, a JSON field that can\naccept a name or number.\nTODO: Rename to Int32OrString",
+      "properties": {
+        "intVal": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "strVal": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "format": "int64"
+        }
+      }
+    },
     "notificationService": {
       "type": "object",
       "properties": {
@@ -5373,6 +5391,23 @@
         }
       }
     },
+    "v1alpha1ApplicationMatchExpression": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "operator": {
+          "type": "string"
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "v1alpha1ApplicationSet": {
       "type": "object",
       "title": "ApplicationSet is a set of Application resources\n+genclient\n+genclient:noStatus\n+k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object\n+kubebuilder:resource:path=applicationsets,shortName=appset;appsets\n+kubebuilder:subresource:status",
@@ -5385,6 +5420,31 @@
         },
         "status": {
           "$ref": "#/definitions/v1alpha1ApplicationSetStatus"
+        }
+      }
+    },
+    "v1alpha1ApplicationSetApplicationStatus": {
+      "type": "object",
+      "title": "ApplicationSetApplicationCondition contains details about each Application managed by the ApplicationSet",
+      "properties": {
+        "application": {
+          "type": "string",
+          "title": "Application contains the name of the Application resource"
+        },
+        "lastTransitionTime": {
+          "$ref": "#/definitions/v1Time"
+        },
+        "message": {
+          "type": "string",
+          "title": "Message contains human-readable message indicating details about the status"
+        },
+        "observedHash": {
+          "type": "string",
+          "title": "ObservedHash contains the last applied hash of the generated Application resource"
+        },
+        "status": {
+          "type": "string",
+          "title": "Status contains the AppSet's perceived status of the managed Application resource: (Waiting, Pending, Progressing, Healthy)"
         }
       }
     },
@@ -5494,6 +5554,31 @@
         }
       }
     },
+    "v1alpha1ApplicationSetRollingUpdateStep": {
+      "type": "object",
+      "properties": {
+        "matchExpressions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/v1alpha1ApplicationMatchExpression"
+          }
+        },
+        "maxUpdate": {
+          "$ref": "#/definitions/intstrIntOrString"
+        }
+      }
+    },
+    "v1alpha1ApplicationSetRollingUpdateStrategy": {
+      "type": "object",
+      "properties": {
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/v1alpha1ApplicationSetRollingUpdateStep"
+          }
+        }
+      }
+    },
     "v1alpha1ApplicationSetSpec": {
       "description": "ApplicationSetSpec represents a class of application set state.",
       "type": "object",
@@ -5507,6 +5592,9 @@
         "goTemplate": {
           "type": "boolean"
         },
+        "strategy": {
+          "$ref": "#/definitions/v1alpha1ApplicationSetStrategy"
+        },
         "syncPolicy": {
           "$ref": "#/definitions/v1alpha1ApplicationSetSyncPolicy"
         },
@@ -5519,12 +5607,30 @@
       "type": "object",
       "title": "ApplicationSetStatus defines the observed state of ApplicationSet",
       "properties": {
+        "applicationStatus": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/v1alpha1ApplicationSetApplicationStatus"
+          }
+        },
         "conditions": {
           "type": "array",
           "title": "INSERT ADDITIONAL STATUS FIELD - define observed state of cluster\nImportant: Run \"make\" to regenerate code after modifying this file",
           "items": {
             "$ref": "#/definitions/v1alpha1ApplicationSetCondition"
           }
+        }
+      }
+    },
+    "v1alpha1ApplicationSetStrategy": {
+      "description": "ApplicationSetStrategy configures how generated Applications are updated in sequence.",
+      "type": "object",
+      "properties": {
+        "rollingUpdate": {
+          "$ref": "#/definitions/v1alpha1ApplicationSetRollingUpdateStrategy"
+        },
+        "type": {
+          "type": "string"
         }
       }
     },

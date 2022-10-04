@@ -419,7 +419,7 @@ func (r *ApplicationSetReconciler) setApplicationSetStatusCondition(ctx context.
 	return nil
 }
 
-func findApplicationStatusIndex(appStatuses []argoprojiov1alpha1.ApplicationSetApplicationStatus, application string) int {
+func findApplicationStatusIndex(appStatuses []argov1alpha1.ApplicationSetApplicationStatus, application string) int {
 	for i := range appStatuses {
 		if appStatuses[i].Application == application {
 			return i
@@ -428,7 +428,7 @@ func findApplicationStatusIndex(appStatuses []argoprojiov1alpha1.ApplicationSetA
 	return -1
 }
 
-func (r *ApplicationSetReconciler) setApplicationSetApplicationStatus(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet, applicationStatuses []argoprojiov1alpha1.ApplicationSetApplicationStatus) error {
+func (r *ApplicationSetReconciler) setApplicationSetApplicationStatus(ctx context.Context, applicationSet *argov1alpha1.ApplicationSet, applicationStatuses []argov1alpha1.ApplicationSetApplicationStatus) error {
 
 	needToUpdateStatus := false
 	for i := range applicationStatuses {
@@ -875,7 +875,7 @@ func hashApplicaton(application argov1alpha1.Application) (string, error) {
 }
 
 // this list tracks which Applications belong to each RollingUpdate step
-func (r *ApplicationSetReconciler) buildAppDependencyList(ctx context.Context, applicationSet argoprojiov1alpha1.ApplicationSet, applications []argov1alpha1.Application) ([][]string, map[string]int, error) {
+func (r *ApplicationSetReconciler) buildAppDependencyList(ctx context.Context, applicationSet argov1alpha1.ApplicationSet, applications []argov1alpha1.Application) ([][]string, map[string]int, error) {
 
 	if applicationSet.Spec.Strategy == nil || applicationSet.Spec.Strategy.RollingUpdate == nil {
 		return [][]string{}, map[string]int{}, nil
@@ -938,7 +938,7 @@ func (r *ApplicationSetReconciler) buildAppDependencyList(ctx context.Context, a
 }
 
 // this map is used to determine which stage of Applications are ready to be updated in the reconciler loop
-func (r *ApplicationSetReconciler) buildAppSyncMap(ctx context.Context, applicationSet argoprojiov1alpha1.ApplicationSet, appDependencyList [][]string, appHashMap map[string]string) (map[string]bool, error) {
+func (r *ApplicationSetReconciler) buildAppSyncMap(ctx context.Context, applicationSet argov1alpha1.ApplicationSet, appDependencyList [][]string, appHashMap map[string]string) (map[string]bool, error) {
 	appSyncMap := map[string]bool{}
 	syncEnabled := true
 
@@ -974,10 +974,10 @@ func (r *ApplicationSetReconciler) buildAppSyncMap(ctx context.Context, applicat
 }
 
 // check the status of each Application's status and promote Applications to the next status if needed
-func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatus(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet, applications []argov1alpha1.Application, appHashMap map[string]string) ([]argoprojiov1alpha1.ApplicationSetApplicationStatus, error) {
+func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatus(ctx context.Context, applicationSet *argov1alpha1.ApplicationSet, applications []argov1alpha1.Application, appHashMap map[string]string) ([]argov1alpha1.ApplicationSetApplicationStatus, error) {
 
 	now := metav1.Now()
-	appStatuses := make([]argoprojiov1alpha1.ApplicationSetApplicationStatus, 0, len(applications))
+	appStatuses := make([]argov1alpha1.ApplicationSetApplicationStatus, 0, len(applications))
 
 	for _, app := range applications {
 
@@ -986,7 +986,7 @@ func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatus(ctx con
 
 		if idx == -1 {
 			// AppStatus not found, set default status of "Waiting"
-			appStatuses = append(appStatuses, argoprojiov1alpha1.ApplicationSetApplicationStatus{
+			appStatuses = append(appStatuses, argov1alpha1.ApplicationSetApplicationStatus{
 				Application:        app.Name,
 				LastTransitionTime: &now,
 				Message:            "No Application status found, defaulting status to Waiting.",
@@ -1044,10 +1044,10 @@ func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatus(ctx con
 }
 
 // check Applications that are in Waiting status and promote them to Pending if needed
-func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusProgress(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet, appSyncMap map[string]bool, appStepMap map[string]int, appHashMap map[string]string) ([]argoprojiov1alpha1.ApplicationSetApplicationStatus, error) {
+func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusProgress(ctx context.Context, applicationSet *argov1alpha1.ApplicationSet, appSyncMap map[string]bool, appStepMap map[string]int, appHashMap map[string]string) ([]argov1alpha1.ApplicationSetApplicationStatus, error) {
 	now := metav1.Now()
 
-	appStatuses := make([]argoprojiov1alpha1.ApplicationSetApplicationStatus, 0, len(applicationSet.Status.ApplicationStatus))
+	appStatuses := make([]argov1alpha1.ApplicationSetApplicationStatus, 0, len(applicationSet.Status.ApplicationStatus))
 
 	// if we have no RollingUpdate steps, clear out the existing ApplicationStatus entries
 	if applicationSet.Spec.Strategy != nil && applicationSet.Spec.Strategy.RollingUpdate != nil {
@@ -1112,7 +1112,7 @@ func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusProgress
 	return appStatuses, nil
 }
 
-func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusConditions(ctx context.Context, applicationSet *argoprojiov1alpha1.ApplicationSet) ([]argoprojiov1alpha1.ApplicationSetCondition, error) {
+func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusConditions(ctx context.Context, applicationSet *argov1alpha1.ApplicationSet) ([]argov1alpha1.ApplicationSetCondition, error) {
 
 	appSetProgressing := false
 	for _, appStatus := range applicationSet.Status.ApplicationStatus {
@@ -1124,7 +1124,7 @@ func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusConditio
 
 	appSetConditionProgressing := false
 	for _, appSetCondition := range applicationSet.Status.Conditions {
-		if appSetCondition.Type == argoprojiov1alpha1.ApplicationSetConditionRolloutProgressing && appSetCondition.Status == argoprojiov1alpha1.ApplicationSetConditionStatusTrue {
+		if appSetCondition.Type == argov1alpha1.ApplicationSetConditionRolloutProgressing && appSetCondition.Status == argov1alpha1.ApplicationSetConditionStatusTrue {
 			appSetConditionProgressing = true
 			break
 		}
@@ -1133,21 +1133,21 @@ func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusConditio
 	if appSetProgressing && !appSetConditionProgressing {
 		_ = r.setApplicationSetStatusCondition(ctx,
 			applicationSet,
-			argoprojiov1alpha1.ApplicationSetCondition{
-				Type:    argoprojiov1alpha1.ApplicationSetConditionRolloutProgressing,
+			argov1alpha1.ApplicationSetCondition{
+				Type:    argov1alpha1.ApplicationSetConditionRolloutProgressing,
 				Message: "ApplicationSet Rollout Rollout started",
-				Reason:  argoprojiov1alpha1.ApplicationSetReasonApplicationSetModified,
-				Status:  argoprojiov1alpha1.ApplicationSetConditionStatusTrue,
+				Reason:  argov1alpha1.ApplicationSetReasonApplicationSetModified,
+				Status:  argov1alpha1.ApplicationSetConditionStatusTrue,
 			}, false,
 		)
 	} else if !appSetProgressing && appSetConditionProgressing {
 		_ = r.setApplicationSetStatusCondition(ctx,
 			applicationSet,
-			argoprojiov1alpha1.ApplicationSetCondition{
-				Type:    argoprojiov1alpha1.ApplicationSetConditionRolloutProgressing,
+			argov1alpha1.ApplicationSetCondition{
+				Type:    argov1alpha1.ApplicationSetConditionRolloutProgressing,
 				Message: "ApplicationSet Rollout Rollout complete",
-				Reason:  argoprojiov1alpha1.ApplicationSetReasonApplicationSetRolloutComplete,
-				Status:  argoprojiov1alpha1.ApplicationSetConditionStatusFalse,
+				Reason:  argov1alpha1.ApplicationSetReasonApplicationSetRolloutComplete,
+				Status:  argov1alpha1.ApplicationSetConditionStatusFalse,
 			}, false,
 		)
 	}
