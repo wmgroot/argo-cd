@@ -58,14 +58,15 @@ type ApplicationSetSpec struct {
 
 // ApplicationSetStrategy configures how generated Applications are updated in sequence.
 type ApplicationSetStrategy struct {
-	Type          string                               `json:"type,omitempty" protobuf:"bytes,1,opt,name=type"`
-	RollingUpdate *ApplicationSetRollingUpdateStrategy `json:"rollingUpdate,omitempty" protobuf:"bytes,2,opt,name=rollingUpdate"`
+	Type          string                         `json:"type,omitempty" protobuf:"bytes,1,opt,name=type"`
+	RollingSync   *ApplicationSetRolloutStrategy `json:"rollingSync,omitempty" protobuf:"bytes,2,opt,name=rollingSync"`
+	RollingUpdate *ApplicationSetRolloutStrategy `json:"rollingUpdate,omitempty" protobuf:"bytes,3,opt,name=rollingUpdate"`
 }
-type ApplicationSetRollingUpdateStrategy struct {
-	Steps []ApplicationSetRollingUpdateStep `json:"steps,omitempty" protobuf:"bytes,1,opt,name=steps"`
+type ApplicationSetRolloutStrategy struct {
+	Steps []ApplicationSetRolloutStep `json:"steps,omitempty" protobuf:"bytes,1,opt,name=steps"`
 }
 
-type ApplicationSetRollingUpdateStep struct {
+type ApplicationSetRolloutStep struct {
 	MatchExpressions []ApplicationMatchExpression `json:"matchExpressions,omitempty" protobuf:"bytes,1,opt,name=matchExpressions"`
 	MaxUpdate        *intstr.IntOrString          `json:"maxUpdate,omitempty" protobuf:"bytes,2,opt,name=maxUpdate"`
 }
@@ -658,8 +659,6 @@ func findConditionIndex(conditions []ApplicationSetCondition, t ApplicationSetCo
 }
 
 func (status *ApplicationSetStatus) SetApplicationStatus(newStatus ApplicationSetApplicationStatus) {
-	// now := metav1.Now()
-	// newStatus.LastTransitionTime = &now
 	for i := range status.ApplicationStatus {
 		appStatus := status.ApplicationStatus[i]
 		if appStatus.Application == newStatus.Application {

@@ -1954,7 +1954,7 @@ func TestSetApplicationSetApplicationStatus(t *testing.T) {
 	}
 
 	appStatuses := []argov1alpha1.ApplicationSetApplicationStatus{
-		argov1alpha1.ApplicationSetApplicationStatus{
+		{
 			Application:        "my-application",
 			LastTransitionTime: &metav1.Time{},
 			Message:            "testing SetApplicationSetApplicationStatus to Healthy",
@@ -2139,8 +2139,8 @@ func TestBuildAppDependencyList(t *testing.T) {
 				Spec: argov1alpha1.ApplicationSetSpec{
 					Strategy: &argov1alpha1.ApplicationSetStrategy{
 						Type: "RollingUpdate",
-						RollingUpdate: &argov1alpha1.ApplicationSetRollingUpdateStrategy{
-							Steps: []argov1alpha1.ApplicationSetRollingUpdateStep{
+						RollingUpdate: &argov1alpha1.ApplicationSetRolloutStrategy{
+							Steps: []argov1alpha1.ApplicationSetRolloutStep{
 								{
 									MatchExpressions: []argov1alpha1.ApplicationMatchExpression{
 										{
@@ -2173,8 +2173,8 @@ func TestBuildAppDependencyList(t *testing.T) {
 				Spec: argov1alpha1.ApplicationSetSpec{
 					Strategy: &argov1alpha1.ApplicationSetStrategy{
 						Type: "RollingUpdate",
-						RollingUpdate: &argov1alpha1.ApplicationSetRollingUpdateStrategy{
-							Steps: []argov1alpha1.ApplicationSetRollingUpdateStep{
+						RollingUpdate: &argov1alpha1.ApplicationSetRolloutStrategy{
+							Steps: []argov1alpha1.ApplicationSetRolloutStep{
 								{
 									MatchExpressions: []argov1alpha1.ApplicationMatchExpression{
 										{
@@ -2218,8 +2218,8 @@ func TestBuildAppDependencyList(t *testing.T) {
 				Spec: argov1alpha1.ApplicationSetSpec{
 					Strategy: &argov1alpha1.ApplicationSetStrategy{
 						Type: "RollingUpdate",
-						RollingUpdate: &argov1alpha1.ApplicationSetRollingUpdateStrategy{
-							Steps: []argov1alpha1.ApplicationSetRollingUpdateStep{
+						RollingUpdate: &argov1alpha1.ApplicationSetRolloutStrategy{
+							Steps: []argov1alpha1.ApplicationSetRolloutStep{
 								{
 									MatchExpressions: []argov1alpha1.ApplicationMatchExpression{
 										{
@@ -2296,8 +2296,8 @@ func TestBuildAppDependencyList(t *testing.T) {
 				Spec: argov1alpha1.ApplicationSetSpec{
 					Strategy: &argov1alpha1.ApplicationSetStrategy{
 						Type: "RollingUpdate",
-						RollingUpdate: &argov1alpha1.ApplicationSetRollingUpdateStrategy{
-							Steps: []argov1alpha1.ApplicationSetRollingUpdateStep{
+						RollingUpdate: &argov1alpha1.ApplicationSetRolloutStrategy{
+							Steps: []argov1alpha1.ApplicationSetRolloutStep{
 								{
 									MatchExpressions: []argov1alpha1.ApplicationMatchExpression{
 										{
@@ -2357,8 +2357,8 @@ func TestBuildAppDependencyList(t *testing.T) {
 				Spec: argov1alpha1.ApplicationSetSpec{
 					Strategy: &argov1alpha1.ApplicationSetStrategy{
 						Type: "RollingUpdate",
-						RollingUpdate: &argov1alpha1.ApplicationSetRollingUpdateStrategy{
-							Steps: []argov1alpha1.ApplicationSetRollingUpdateStep{
+						RollingUpdate: &argov1alpha1.ApplicationSetRolloutStrategy{
+							Steps: []argov1alpha1.ApplicationSetRolloutStep{
 								{
 									MatchExpressions: []argov1alpha1.ApplicationMatchExpression{
 										{
@@ -2411,6 +2411,60 @@ func TestBuildAppDependencyList(t *testing.T) {
 				"app-prod": 0,
 			},
 		},
+
+		{
+			name: "handles RollingSync values",
+			appSet: argov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingSync",
+						RollingSync: &argov1alpha1.ApplicationSetRolloutStrategy{
+							Steps: []argov1alpha1.ApplicationSetRolloutStep{
+								{
+									MatchExpressions: []argov1alpha1.ApplicationMatchExpression{
+										{
+											Key:      "env",
+											Operator: "In",
+											Values: []string{
+												"qa",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app-dev",
+						Labels: map[string]string{
+							"env": "dev",
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app-qa",
+						Labels: map[string]string{
+							"env": "qa",
+						},
+					},
+				},
+			},
+			expectedList: [][]string{
+				{"app-qa"},
+			},
+			expectedStepMap: map[string]int{
+				"app-qa": 0,
+			},
+		},
 	} {
 
 		t.Run(cc.name, func(t *testing.T) {
@@ -2451,6 +2505,7 @@ func TestBuildAppSyncMap(t *testing.T) {
 	for _, cc := range []struct {
 		name              string
 		appSet            argov1alpha1.ApplicationSet
+		appMap            map[string]argov1alpha1.Application
 		appDependencyList [][]string
 		appHashMap        map[string]string
 		expectedMap       map[string]bool
@@ -2462,7 +2517,11 @@ func TestBuildAppSyncMap(t *testing.T) {
 					Name:      "name",
 					Namespace: "argocd",
 				},
-				Spec: argov1alpha1.ApplicationSetSpec{},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
+				},
 			},
 			appDependencyList: [][]string{},
 			expectedMap:       map[string]bool{},
@@ -2474,7 +2533,11 @@ func TestBuildAppSyncMap(t *testing.T) {
 					Name:      "name",
 					Namespace: "argocd",
 				},
-				Spec: argov1alpha1.ApplicationSetSpec{},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
+				},
 			},
 			appDependencyList: [][]string{
 				{"app1"},
@@ -2496,7 +2559,11 @@ func TestBuildAppSyncMap(t *testing.T) {
 					Name:      "name",
 					Namespace: "argocd",
 				},
-				Spec: argov1alpha1.ApplicationSetSpec{},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
+				},
 			},
 			appDependencyList: [][]string{
 				{},
@@ -2514,7 +2581,11 @@ func TestBuildAppSyncMap(t *testing.T) {
 					Name:      "name",
 					Namespace: "argocd",
 				},
-				Spec: argov1alpha1.ApplicationSetSpec{},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
+				},
 				Status: argov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
 						{
@@ -2550,7 +2621,11 @@ func TestBuildAppSyncMap(t *testing.T) {
 					Name:      "name",
 					Namespace: "argocd",
 				},
-				Spec: argov1alpha1.ApplicationSetSpec{},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
+				},
 				Status: argov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
 						{
@@ -2586,7 +2661,11 @@ func TestBuildAppSyncMap(t *testing.T) {
 					Name:      "name",
 					Namespace: "argocd",
 				},
-				Spec: argov1alpha1.ApplicationSetSpec{},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
+				},
 				Status: argov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
 						{
@@ -2622,7 +2701,113 @@ func TestBuildAppSyncMap(t *testing.T) {
 					Name:      "name",
 					Namespace: "argocd",
 				},
-				Spec: argov1alpha1.ApplicationSetSpec{},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
+				},
+				Status: argov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:  "app1",
+							ObservedHash: "11",
+							Status:       "Progressing",
+						},
+						{
+							Application:  "app2",
+							ObservedHash: "22",
+							Status:       "Progressing",
+						},
+					},
+				},
+			},
+			appDependencyList: [][]string{
+				{"app1"},
+				{"app2"},
+			},
+			appHashMap: map[string]string{
+				"app1": "11",
+				"app2": "22",
+			},
+			expectedMap: map[string]bool{
+				"app1": true,
+				"app2": false,
+			},
+		},
+		{
+			name: "handles RollingSync applications that are OutOfSync and healthy",
+			appSet: argov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingSync",
+					},
+				},
+				Status: argov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:  "app1",
+							ObservedHash: "11",
+							Status:       "Healthy",
+						},
+						{
+							Application:  "app2",
+							ObservedHash: "22",
+							Status:       "Healthy",
+						},
+					},
+				},
+			},
+			appDependencyList: [][]string{
+				{"app1"},
+				{"app2"},
+			},
+			appHashMap: map[string]string{
+				"app1": "11",
+				"app2": "22",
+			},
+			appMap: map[string]argov1alpha1.Application{
+				"app1": {
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app1",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Sync: argov1alpha1.SyncStatus{
+							Status: argov1alpha1.SyncStatusCodeOutOfSync,
+						},
+					},
+				},
+				"app2": {
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app2",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Sync: argov1alpha1.SyncStatus{
+							Status: argov1alpha1.SyncStatusCodeOutOfSync,
+						},
+					},
+				},
+			},
+			expectedMap: map[string]bool{
+				"app1": true,
+				"app2": false,
+			},
+		},
+		{
+			name: "handles RollingSync applications that are up to date, but not healthy",
+			appSet: argov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingSync",
+					},
+				},
 				Status: argov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
 						{
@@ -2658,7 +2843,11 @@ func TestBuildAppSyncMap(t *testing.T) {
 					Name:      "name",
 					Namespace: "argocd",
 				},
-				Spec: argov1alpha1.ApplicationSetSpec{},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
+				},
 				Status: argov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
 						{
@@ -2730,7 +2919,7 @@ func TestBuildAppSyncMap(t *testing.T) {
 				KubeClientset:    kubeclientset,
 			}
 
-			appSyncMap, err := r.buildAppSyncMap(context.TODO(), cc.appSet, cc.appDependencyList, cc.appHashMap)
+			appSyncMap, err := r.buildAppSyncMap(context.TODO(), cc.appSet, cc.appDependencyList, cc.appHashMap, cc.appMap)
 			assert.Equal(t, err, nil, "expected no errors, but errors occured")
 			assert.Equal(t, cc.expectedMap, appSyncMap, "expected appSyncMap did not match actual")
 		})
@@ -2760,6 +2949,11 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 					Name:      "name",
 					Namespace: "argocd",
 				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
+				},
 			},
 			apps:              []argov1alpha1.Application{},
 			expectedAppStatus: []argov1alpha1.ApplicationSetApplicationStatus{},
@@ -2770,6 +2964,11 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "name",
 					Namespace: "argocd",
+				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
 				},
 			},
 			apps: []argov1alpha1.Application{
@@ -2800,6 +2999,11 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 					Name:      "name",
 					Namespace: "argocd",
 				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
+				},
 				Status: argov1alpha1.ApplicationSetStatus{},
 			},
 			apps: []argov1alpha1.Application{
@@ -2829,6 +3033,11 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "name",
 					Namespace: "argocd",
+				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
 				},
 				Status: argov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
@@ -2873,6 +3082,11 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 					Namespace:  "argocd",
 					Generation: 2,
 				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
+				},
 				Status: argov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
 						{
@@ -2912,6 +3126,11 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "name",
 					Namespace: "argocd",
+				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
 				},
 				Status: argov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
@@ -2955,6 +3174,11 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 					Name:      "name",
 					Namespace: "argocd",
 				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
+				},
 				Status: argov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
 						{
@@ -2991,11 +3215,63 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 			},
 		},
 		{
+			name: "progresses an OutOfSync RollingSync application to waiting",
+			appSet: argov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingSync",
+					},
+				},
+				Status: argov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application:  "app1",
+							Message:      "",
+							ObservedHash: "1",
+							Status:       "Healthy",
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app1",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Sync: argov1alpha1.SyncStatus{
+							Status: argov1alpha1.SyncStatusCodeOutOfSync,
+						},
+					},
+				},
+			},
+			appHashMap: map[string]string{
+				"app1": "11",
+			},
+			expectedAppStatus: []argov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:  "app1",
+					Message:      "Application has pending changes, setting status to Waiting.",
+					ObservedHash: "1",
+					Status:       "Waiting",
+				},
+			},
+		},
+		{
 			name: "progresses a pending application to progressing",
 			appSet: argov1alpha1.ApplicationSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "name",
 					Namespace: "argocd",
+				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
 				},
 				Status: argov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
@@ -3039,6 +3315,11 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 					Name:      "name",
 					Namespace: "argocd",
 				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
+				},
 				Status: argov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
 						{
@@ -3081,6 +3362,11 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "name",
 					Namespace: "argocd",
+				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingUpdate",
+					},
 				},
 				Status: argov1alpha1.ApplicationSetStatus{
 					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
@@ -3165,6 +3451,7 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 		appSyncMap        map[string]bool
 		appStepMap        map[string]int
 		appHashMap        map[string]string
+		appMap            map[string]argov1alpha1.Application
 		expectedAppStatus []argov1alpha1.ApplicationSetApplicationStatus
 	}{
 		{
@@ -3177,8 +3464,8 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 				Spec: argov1alpha1.ApplicationSetSpec{
 					Strategy: &argov1alpha1.ApplicationSetStrategy{
 						Type: "RollingUpdate",
-						RollingUpdate: &argov1alpha1.ApplicationSetRollingUpdateStrategy{
-							Steps: []argov1alpha1.ApplicationSetRollingUpdateStep{
+						RollingUpdate: &argov1alpha1.ApplicationSetRolloutStrategy{
+							Steps: []argov1alpha1.ApplicationSetRolloutStep{
 								{
 									MatchExpressions: []argov1alpha1.ApplicationMatchExpression{},
 								},
@@ -3262,8 +3549,8 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 				Spec: argov1alpha1.ApplicationSetSpec{
 					Strategy: &argov1alpha1.ApplicationSetStrategy{
 						Type: "RollingUpdate",
-						RollingUpdate: &argov1alpha1.ApplicationSetRollingUpdateStrategy{
-							Steps: []argov1alpha1.ApplicationSetRollingUpdateStep{
+						RollingUpdate: &argov1alpha1.ApplicationSetRolloutStrategy{
+							Steps: []argov1alpha1.ApplicationSetRolloutStep{
 								{
 									MatchExpressions: []argov1alpha1.ApplicationMatchExpression{},
 								},
@@ -3313,8 +3600,8 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 				Spec: argov1alpha1.ApplicationSetSpec{
 					Strategy: &argov1alpha1.ApplicationSetStrategy{
 						Type: "RollingUpdate",
-						RollingUpdate: &argov1alpha1.ApplicationSetRollingUpdateStrategy{
-							Steps: []argov1alpha1.ApplicationSetRollingUpdateStep{
+						RollingUpdate: &argov1alpha1.ApplicationSetRolloutStrategy{
+							Steps: []argov1alpha1.ApplicationSetRolloutStep{
 								{
 									MatchExpressions: []argov1alpha1.ApplicationMatchExpression{},
 								},
@@ -3360,8 +3647,8 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 				Spec: argov1alpha1.ApplicationSetSpec{
 					Strategy: &argov1alpha1.ApplicationSetStrategy{
 						Type: "RollingUpdate",
-						RollingUpdate: &argov1alpha1.ApplicationSetRollingUpdateStrategy{
-							Steps: []argov1alpha1.ApplicationSetRollingUpdateStep{
+						RollingUpdate: &argov1alpha1.ApplicationSetRolloutStrategy{
+							Steps: []argov1alpha1.ApplicationSetRolloutStep{
 								{
 									MatchExpressions: []argov1alpha1.ApplicationMatchExpression{},
 								},
@@ -3407,8 +3694,8 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 				Spec: argov1alpha1.ApplicationSetSpec{
 					Strategy: &argov1alpha1.ApplicationSetStrategy{
 						Type: "RollingUpdate",
-						RollingUpdate: &argov1alpha1.ApplicationSetRollingUpdateStrategy{
-							Steps: []argov1alpha1.ApplicationSetRollingUpdateStep{
+						RollingUpdate: &argov1alpha1.ApplicationSetRolloutStrategy{
+							Steps: []argov1alpha1.ApplicationSetRolloutStep{
 								{
 									MatchExpressions: []argov1alpha1.ApplicationMatchExpression{},
 									MaxUpdate: &intstr.IntOrString{
@@ -3488,6 +3775,138 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 			},
 		},
 		{
+			name: "does not update a status if maxUpdate has already been reached with RollingSync",
+			appSet: argov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type: "RollingSync",
+						RollingSync: &argov1alpha1.ApplicationSetRolloutStrategy{
+							Steps: []argov1alpha1.ApplicationSetRolloutStep{
+								{
+									MatchExpressions: []argov1alpha1.ApplicationMatchExpression{},
+									MaxUpdate: &intstr.IntOrString{
+										Type:   intstr.Int,
+										IntVal: 3,
+									},
+								},
+								{
+									MatchExpressions: []argov1alpha1.ApplicationMatchExpression{},
+								},
+							},
+						},
+					},
+				},
+				Status: argov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application: "app1",
+							Message:     "Application resource became Progressing, updating status from Pending to Progressing.",
+							Status:      "Progressing",
+						},
+						{
+							Application: "app2",
+							Message:     "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							Status:      "Waiting",
+						},
+						{
+							Application: "app3",
+							Message:     "Application is out of date with the current AppSet generation, setting status to Waiting.",
+							Status:      "Waiting",
+						},
+						{
+							Application: "app4",
+							Message:     "Application moved to Pending status, watching for the Application resource to start Progressing.",
+							Status:      "Pending",
+						},
+					},
+				},
+			},
+			appSyncMap: map[string]bool{
+				"app1": true,
+				"app2": true,
+				"app3": true,
+				"app4": true,
+			},
+			appStepMap: map[string]int{
+				"app1": 0,
+				"app2": 0,
+				"app3": 0,
+				"app4": 0,
+			},
+			appMap: map[string]argov1alpha1.Application{
+				"app1": {
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app1",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Sync: argov1alpha1.SyncStatus{
+							Status: argov1alpha1.SyncStatusCodeOutOfSync,
+						},
+					},
+				},
+				"app2": {
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app2",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Sync: argov1alpha1.SyncStatus{
+							Status: argov1alpha1.SyncStatusCodeOutOfSync,
+						},
+					},
+				},
+				"app3": {
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app3",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Sync: argov1alpha1.SyncStatus{
+							Status: argov1alpha1.SyncStatusCodeOutOfSync,
+						},
+					},
+				},
+				"app4": {
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app4",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Sync: argov1alpha1.SyncStatus{
+							Status: argov1alpha1.SyncStatusCodeOutOfSync,
+						},
+					},
+				},
+			},
+			expectedAppStatus: []argov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:        "app1",
+					LastTransitionTime: nil,
+					Message:            "Application resource became Progressing, updating status from Pending to Progressing.",
+					Status:             "Progressing",
+				},
+				{
+					Application:        "app2",
+					LastTransitionTime: nil,
+					Message:            "Application moved to Pending status, watching for the Application resource to start Progressing.",
+					Status:             "Pending",
+				},
+				{
+					Application:        "app3",
+					LastTransitionTime: nil,
+					Message:            "Application is out of date with the current AppSet generation, setting status to Waiting.",
+					Status:             "Waiting",
+				},
+				{
+					Application:        "app4",
+					LastTransitionTime: nil,
+					Message:            "Application moved to Pending status, watching for the Application resource to start Progressing.",
+					Status:             "Pending",
+				},
+			},
+		},
+		{
 			name: "handles maxUpdate set to percentage string",
 			appSet: argov1alpha1.ApplicationSet{
 				ObjectMeta: metav1.ObjectMeta{
@@ -3497,8 +3916,8 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 				Spec: argov1alpha1.ApplicationSetSpec{
 					Strategy: &argov1alpha1.ApplicationSetStrategy{
 						Type: "RollingUpdate",
-						RollingUpdate: &argov1alpha1.ApplicationSetRollingUpdateStrategy{
-							Steps: []argov1alpha1.ApplicationSetRollingUpdateStep{
+						RollingUpdate: &argov1alpha1.ApplicationSetRolloutStrategy{
+							Steps: []argov1alpha1.ApplicationSetRolloutStep{
 								{
 									MatchExpressions: []argov1alpha1.ApplicationMatchExpression{},
 									MaxUpdate: &intstr.IntOrString{
@@ -3584,7 +4003,7 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 				KubeClientset:    kubeclientset,
 			}
 
-			appStatuses, err := r.updateApplicationSetApplicationStatusProgress(context.TODO(), &cc.appSet, cc.appSyncMap, cc.appStepMap, cc.appHashMap)
+			appStatuses, err := r.updateApplicationSetApplicationStatusProgress(context.TODO(), &cc.appSet, cc.appSyncMap, cc.appStepMap, cc.appHashMap, cc.appMap)
 
 			// opt out of testing the LastTransitionTime is accurate
 			for i := range appStatuses {

@@ -5554,7 +5554,7 @@
         }
       }
     },
-    "v1alpha1ApplicationSetRollingUpdateStep": {
+    "v1alpha1ApplicationSetRolloutStep": {
       "type": "object",
       "properties": {
         "matchExpressions": {
@@ -5568,13 +5568,13 @@
         }
       }
     },
-    "v1alpha1ApplicationSetRollingUpdateStrategy": {
+    "v1alpha1ApplicationSetRolloutStrategy": {
       "type": "object",
       "properties": {
         "steps": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/v1alpha1ApplicationSetRollingUpdateStep"
+            "$ref": "#/definitions/v1alpha1ApplicationSetRolloutStep"
           }
         }
       }
@@ -5626,8 +5626,11 @@
       "description": "ApplicationSetStrategy configures how generated Applications are updated in sequence.",
       "type": "object",
       "properties": {
+        "rollingSync": {
+          "$ref": "#/definitions/v1alpha1ApplicationSetRolloutStrategy"
+        },
         "rollingUpdate": {
-          "$ref": "#/definitions/v1alpha1ApplicationSetRollingUpdateStrategy"
+          "$ref": "#/definitions/v1alpha1ApplicationSetRolloutStrategy"
         },
         "type": {
           "type": "string"

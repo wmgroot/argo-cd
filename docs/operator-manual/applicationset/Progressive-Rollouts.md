@@ -18,6 +18,7 @@ As an experimental feature, progressive rollouts must be explicitly enabled, in 
 
 * AllAtOnce (default)
 * RollingUpdate
+* RollingSync
 
 ### AllAtOnce
 This default Application update behavior is unchanged from the original ApplicationSet implementation.
@@ -92,9 +93,17 @@ spec:
 ```
 
 #### Limitations
-The RollingUpdate strategy does not enforce sync order for external changes. Basically, if the ApplicationSet spec does not change, the RollingUpdate strategy has no mechanism available to control the sync order of the Applications it manages. The managed Applications will sync on their own (if autosync is enabled), and your desired rollingUpdate spec will be ignored.
+The RollingUpdate strategy does not enforce sync order for external changes. Basically, if the ApplicationSet spec does not change, the RollingUpdate strategy has no mechanism available to control the sync order of the Applications it manages. The managed Applications will sync on their own (if autosync is enabled), and your desired rollingUpdate spec will be ignored. Please use RollingSync instead to address this limitation.
 
 This includes:
 
 * Updates to manifests in a directory watched by the generated Application.
 * Updates to an unversioned helm chart watched by the generated Application (including versioned upstream chart dependencies in the unversioned Chart.yaml).
+
+### RollingSync
+RollingSync behaves similarly to RollingUpdate, but uses the OutOfSync status of an Application resource to detect that an Application should be updated. It is based on the work of https://github.com/Skyscanner/applicationset-progressive-sync, and has the following differences from the RollingUpdate strategy.
+
+* The same spec is used for both RollingUpdate and RollingSync to determine Application dependencies.
+* RollingSync will capture external changes outside the ApplicationSet resource, since it relies on the OutOfSync status instead of Application resource hashing.
+* RollingSync will force all generated Applications to have autosync disabled. Warnings are printed in the applicationset-controller logs for any Application specs with autosync enabled.
+* Sync operations are triggered through the use of the `operation` field on the Application resource. This should respect sync windows as if a user had clicked the "Sync" button in the Argo UI.

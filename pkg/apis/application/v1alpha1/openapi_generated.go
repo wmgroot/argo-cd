@@ -30,8 +30,8 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetGenerator":             schema_pkg_apis_application_v1alpha1_ApplicationSetGenerator(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetList":                  schema_pkg_apis_application_v1alpha1_ApplicationSetList(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetNestedGenerator":       schema_pkg_apis_application_v1alpha1_ApplicationSetNestedGenerator(ref),
-		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRollingUpdateStep":     schema_pkg_apis_application_v1alpha1_ApplicationSetRollingUpdateStep(ref),
-		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRollingUpdateStrategy": schema_pkg_apis_application_v1alpha1_ApplicationSetRollingUpdateStrategy(ref),
+		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRolloutStep":           schema_pkg_apis_application_v1alpha1_ApplicationSetRolloutStep(ref),
+		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRolloutStrategy":       schema_pkg_apis_application_v1alpha1_ApplicationSetRolloutStrategy(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetSpec":                  schema_pkg_apis_application_v1alpha1_ApplicationSetSpec(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetStatus":                schema_pkg_apis_application_v1alpha1_ApplicationSetStatus(ref),
 		"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetStrategy":              schema_pkg_apis_application_v1alpha1_ApplicationSetStrategy(ref),
@@ -1019,7 +1019,7 @@ func schema_pkg_apis_application_v1alpha1_ApplicationSetNestedGenerator(ref comm
 	}
 }
 
-func schema_pkg_apis_application_v1alpha1_ApplicationSetRollingUpdateStep(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_pkg_apis_application_v1alpha1_ApplicationSetRolloutStep(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -1051,7 +1051,7 @@ func schema_pkg_apis_application_v1alpha1_ApplicationSetRollingUpdateStep(ref co
 	}
 }
 
-func schema_pkg_apis_application_v1alpha1_ApplicationSetRollingUpdateStrategy(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_pkg_apis_application_v1alpha1_ApplicationSetRolloutStrategy(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -1064,7 +1064,7 @@ func schema_pkg_apis_application_v1alpha1_ApplicationSetRollingUpdateStrategy(re
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRollingUpdateStep"),
+										Ref:     ref("github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRolloutStep"),
 									},
 								},
 							},
@@ -1074,7 +1074,7 @@ func schema_pkg_apis_application_v1alpha1_ApplicationSetRollingUpdateStrategy(re
 			},
 		},
 		Dependencies: []string{
-			"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRollingUpdateStep"},
+			"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRolloutStep"},
 	}
 }
 
@@ -1184,16 +1184,21 @@ func schema_pkg_apis_application_v1alpha1_ApplicationSetStrategy(ref common.Refe
 							Format: "",
 						},
 					},
+					"rollingSync": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRolloutStrategy"),
+						},
+					},
 					"rollingUpdate": {
 						SchemaProps: spec.SchemaProps{
-							Ref: ref("github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRollingUpdateStrategy"),
+							Ref: ref("github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRolloutStrategy"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRollingUpdateStrategy"},
+			"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1.ApplicationSetRolloutStrategy"},
 	}
 }
 

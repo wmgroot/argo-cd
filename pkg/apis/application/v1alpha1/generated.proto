@@ -263,14 +263,14 @@ message ApplicationSetNestedGenerator {
   optional k8s.io.apimachinery.pkg.apis.meta.v1.LabelSelector selector = 9;
 }
 
-message ApplicationSetRollingUpdateStep {
+message ApplicationSetRolloutStep {
   repeated ApplicationMatchExpression matchExpressions = 1;
 
   optional k8s.io.apimachinery.pkg.util.intstr.IntOrString maxUpdate = 2;
 }
 
-message ApplicationSetRollingUpdateStrategy {
-  repeated ApplicationSetRollingUpdateStep steps = 1;
+message ApplicationSetRolloutStrategy {
+  repeated ApplicationSetRolloutStep steps = 1;
 }
 
 // ApplicationSetSpec represents a class of application set state.
@@ -299,7 +299,9 @@ message ApplicationSetStatus {
 message ApplicationSetStrategy {
   optional string type = 1;
 
-  optional ApplicationSetRollingUpdateStrategy rollingUpdate = 2;
+  optional ApplicationSetRolloutStrategy rollingSync = 2;
+
+  optional ApplicationSetRolloutStrategy rollingUpdate = 3;
 }
 
 // ApplicationSetSyncPolicy configures how generated Applications will relate to their
