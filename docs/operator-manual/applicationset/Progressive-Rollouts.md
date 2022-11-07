@@ -1,13 +1,13 @@
 # Progressive Rollouts
 
-This feature allows you to control the order that the ApplicationSet controller will use to create or update the Applications owned by an ApplicationSet resource.
+This feature allows you to control the order in which the ApplicationSet controller will create or update the Applications owned by an ApplicationSet resource.
 
 ## Use Cases
-The Progressive Rollouts feature set is intended to be light and flexible. The feature is intended to only interact with the health of managed Applications. It is not intended to support direct integrations with other Rollout controllers (such as the native ReplicaSet controller or Argo Rollouts).
+The Progressive Rollouts feature set is intended to be light and flexible. The feature only interacts with the health of managed Applications. It is not intended to support direct integrations with other Rollout controllers (such as the native ReplicaSet controller or Argo Rollouts).
 
 * Progressive Rollouts watch for the managed Application resources to become "Healthy" before proceeding to the next stage.
-* Deployments, Daemonsets, StatefulSets, and [Argo Rollouts](https://argoproj.github.io/argo-rollouts/) are all supported, because the Application enters a "Progressing" state while pods are being rolled out.
-* [Argo CD Resource Hooks](../../user-guide/resource_hooks.md) are supported. We recommend this approach for users that need advanced functionality when an Argo Rollout cannot be used, such as smoke testing after a Daemonset change.
+* Deployments, DaemonSets, StatefulSets, and [Argo Rollouts](https://argoproj.github.io/argo-rollouts/) are all supported, because the Application enters a "Progressing" state while pods are being rolled out. In fact, any resource with a health check that can report a "Progressing" status is supported.
+* [Argo CD Resource Hooks](../../user-guide/resource_hooks.md) are supported. We recommend this approach for users that need advanced functionality when an Argo Rollout cannot be used, such as smoke testing after a DaemonSet change.
 
 ## Enabling Progressive Rollouts
 As an experimental feature, progressive rollouts must be explicitly enabled, in one of two ways.
@@ -104,6 +104,6 @@ This includes:
 RollingSync behaves similarly to RollingUpdate, but uses the OutOfSync status of an Application resource to detect that an Application should be updated. It is based on the work of https://github.com/Skyscanner/applicationset-progressive-sync, and has the following differences from the RollingUpdate strategy.
 
 * The same spec is used for both RollingUpdate and RollingSync to determine Application dependencies.
-* RollingSync will capture external changes outside the ApplicationSet resource, since it relies on the OutOfSync status instead of Application resource hashing.
+* RollingSync will capture external changes outside the ApplicationSet resource, since it relies on the OutOfSync status instead of changes in the generated Application resources to trigger a rollout.
 * RollingSync will force all generated Applications to have autosync disabled. Warnings are printed in the applicationset-controller logs for any Application specs with autosync enabled.
-* Sync operations are triggered through the use of the `operation` field on the Application resource. This should respect sync windows as if a user had clicked the "Sync" button in the Argo UI.
+* Sync operations are triggered the same way as if they were triggered by the UI or CLI (by directly setting the `operation` status field on the Application resource). This means that a RollingSync will respect sync windows just as if a user had clicked the "Sync" button in the Argo UI.
