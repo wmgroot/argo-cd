@@ -47,6 +47,13 @@ type ApplicationSet struct {
 	Status            ApplicationSetStatus `json:"status,omitempty" protobuf:"bytes,3,opt,name=status"`
 }
 
+func (a ApplicationSet) StrategyEnabled() bool {
+	return a.Spec.Strategy != nil &&
+		a.Spec.Strategy.Type != "" &&
+		((a.Spec.Strategy.Type == "RollingUpdate" && a.Spec.Strategy.RollingUpdate != nil) ||
+			(a.Spec.Strategy.Type == "RollingSync" && a.Spec.Strategy.RollingSync != nil))
+}
+
 // ApplicationSetSpec represents a class of application set state.
 type ApplicationSetSpec struct {
 	GoTemplate bool                      `json:"goTemplate,omitempty" protobuf:"bytes,1,name=goTemplate"`
@@ -62,6 +69,25 @@ type ApplicationSetStrategy struct {
 	RollingSync   *ApplicationSetRolloutStrategy `json:"rollingSync,omitempty" protobuf:"bytes,2,opt,name=rollingSync"`
 	RollingUpdate *ApplicationSetRolloutStrategy `json:"rollingUpdate,omitempty" protobuf:"bytes,3,opt,name=rollingUpdate"`
 }
+
+func (s ApplicationSetStrategy) GetRolloutSteps() []ApplicationSetRolloutStep {
+	if s.Type == "RollingUpdate" {
+		return s.RollingUpdate.Steps
+	} else if s.Type == "RollingSync" {
+		return s.RollingSync.Steps
+	}
+	return nil
+}
+
+func (s ApplicationSetStrategy) GetMaxUpdateForStep(step int) *intstr.IntOrString {
+	if s.Type == "RollingUpdate" {
+		return s.RollingUpdate.Steps[step].MaxUpdate
+	} else if s.Type == "RollingSync" {
+		return s.RollingSync.Steps[step].MaxUpdate
+	}
+	return nil
+}
+
 type ApplicationSetRolloutStrategy struct {
 	Steps []ApplicationSetRolloutStep `json:"steps,omitempty" protobuf:"bytes,1,opt,name=steps"`
 }
@@ -560,7 +586,7 @@ const (
 // prefix "Info" means informational condition
 type ApplicationSetConditionType string
 
-//ErrorOccurred / ParametersGenerated / TemplateRendered / ResourcesUpToDate
+// ErrorOccurred / ParametersGenerated / TemplateRendered / ResourcesUpToDate
 const (
 	ApplicationSetConditionErrorOccurred       ApplicationSetConditionType = "ErrorOccurred"
 	ApplicationSetConditionParametersGenerated ApplicationSetConditionType = "ParametersGenerated"

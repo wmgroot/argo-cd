@@ -25,9 +25,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/argoproj/gitops-engine/pkg/health"
+
 	"github.com/argoproj/argo-cd/v2/applicationset/generators"
 	"github.com/argoproj/argo-cd/v2/applicationset/utils"
-	"github.com/argoproj/gitops-engine/pkg/health"
 
 	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 	argov1alpha1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
@@ -2074,7 +2075,7 @@ func TestHashApplicaton(t *testing.T) {
 		},
 	} {
 		t.Run(cc.name, func(t *testing.T) {
-			hash, err := hashApplicaton(cc.app)
+			hash, err := hashApplication(cc.app)
 			assert.Equal(t, err, nil, "expected no errors, but errors occured")
 			assert.Equal(t, cc.expectedHash, hash, "expected hash did not match actual")
 		})
@@ -2483,7 +2484,7 @@ func TestBuildAppDependencyList(t *testing.T) {
 				KubeClientset:    kubeclientset,
 			}
 
-			appDependencyList, appStepMap, err := r.buildAppDependencyList(context.TODO(), cc.appSet, cc.apps)
+			appDependencyList, appStepMap, err := r.buildAppDependencyList(cc.appSet, cc.apps)
 			assert.Equal(t, err, nil, "expected no errors, but errors occured")
 			assert.Equal(t, cc.expectedList, appDependencyList, "expected appDependencyList did not match actual")
 			assert.Equal(t, cc.expectedStepMap, appStepMap, "expected appStepMap did not match actual")
@@ -2919,7 +2920,7 @@ func TestBuildAppSyncMap(t *testing.T) {
 				KubeClientset:    kubeclientset,
 			}
 
-			appSyncMap, err := r.buildAppSyncMap(context.TODO(), cc.appSet, cc.appDependencyList, cc.appHashMap, cc.appMap)
+			appSyncMap, err := r.buildAppSyncMap(cc.appSet, cc.appDependencyList, cc.appHashMap, cc.appMap)
 			assert.Equal(t, err, nil, "expected no errors, but errors occured")
 			assert.Equal(t, cc.expectedMap, appSyncMap, "expected appSyncMap did not match actual")
 		})
