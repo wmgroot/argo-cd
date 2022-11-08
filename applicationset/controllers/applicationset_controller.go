@@ -1186,13 +1186,7 @@ func getPendingAndProgressingCounts(strategy argov1alpha1.ApplicationSetStrategy
 	var updateCountMap []int
 	var totalCountMap []int
 
-	length := 0
-	if strategy.Type == "RollingUpdate" {
-		length = len(strategy.RollingUpdate.Steps)
-	} else {
-		length = len(strategy.RollingSync.Steps)
-	}
-	for s := 0; s < length; s++ {
+	for s := 0; s < len(strategy.GetRolloutSteps()); s++ {
 		updateCountMap = append(updateCountMap, 0)
 		totalCountMap = append(totalCountMap, 0)
 	}
