@@ -25,9 +25,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/argoproj/gitops-engine/pkg/health"
+
 	"github.com/argoproj/argo-cd/v2/applicationset/generators"
 	"github.com/argoproj/argo-cd/v2/applicationset/utils"
-	"github.com/argoproj/gitops-engine/pkg/health"
 
 	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 	argov1alpha1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
@@ -131,82 +132,86 @@ func TestExtractApplications(t *testing.T) {
 			},
 		}
 
-		t.Run(cc.name, func(t *testing.T) {
+		for _, progressiveRolloutsEnabled := range []bool{true, false} {
+			name := fmt.Sprintf("%s (progressiveRolloutsEnabled=%v)", cc.name, progressiveRolloutsEnabled)
+			t.Run(name, func(t *testing.T) {
 
-			appSet := &argov1alpha1.ApplicationSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "name",
-					Namespace: "namespace",
-				},
-			}
+				appSet := &argov1alpha1.ApplicationSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "name",
+						Namespace: "namespace",
+					},
+				}
 
-			client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(appSet).Build()
+				client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(appSet).Build()
 
-			generatorMock := generatorMock{}
-			generator := argov1alpha1.ApplicationSetGenerator{
-				List: &argov1alpha1.ListGenerator{},
-			}
+				generatorMock := generatorMock{}
+				generator := argov1alpha1.ApplicationSetGenerator{
+					List: &argov1alpha1.ListGenerator{},
+				}
 
-			generatorMock.On("GenerateParams", &generator).
-				Return(cc.params, cc.generateParamsError)
+				generatorMock.On("GenerateParams", &generator).
+					Return(cc.params, cc.generateParamsError)
 
-			generatorMock.On("GetTemplate", &generator).
-				Return(&argov1alpha1.ApplicationSetTemplate{})
+				generatorMock.On("GetTemplate", &generator).
+					Return(&argov1alpha1.ApplicationSetTemplate{})
 
-			rendererMock := rendererMock{}
+				rendererMock := rendererMock{}
 
-			var expectedApps []argov1alpha1.Application
+				var expectedApps []argov1alpha1.Application
 
-			if cc.generateParamsError == nil {
-				for _, p := range cc.params {
+				if cc.generateParamsError == nil {
+					for _, p := range cc.params {
 
-					if cc.rendererError != nil {
-						rendererMock.On("RenderTemplateParams", getTempApplication(cc.template), p, false).
-							Return(nil, cc.rendererError)
-					} else {
-						rendererMock.On("RenderTemplateParams", getTempApplication(cc.template), p, false).
-							Return(&app, nil)
-						expectedApps = append(expectedApps, app)
+						if cc.rendererError != nil {
+							rendererMock.On("RenderTemplateParams", getTempApplication(cc.template), p, false).
+								Return(nil, cc.rendererError)
+						} else {
+							rendererMock.On("RenderTemplateParams", getTempApplication(cc.template), p, false).
+								Return(&app, nil)
+							expectedApps = append(expectedApps, app)
+						}
 					}
 				}
-			}
 
-			r := ApplicationSetReconciler{
-				Client:   client,
-				Scheme:   scheme,
-				Recorder: record.NewFakeRecorder(1),
-				Generators: map[string]generators.Generator{
-					"List": &generatorMock,
-				},
-				Renderer:      &rendererMock,
-				KubeClientset: kubefake.NewSimpleClientset(),
-			}
+				r := ApplicationSetReconciler{
+					Client:   client,
+					Scheme:   scheme,
+					Recorder: record.NewFakeRecorder(1),
+					Generators: map[string]generators.Generator{
+						"List": &generatorMock,
+					},
+					Renderer:                  &rendererMock,
+					KubeClientset:             kubefake.NewSimpleClientset(),
+					EnableProgressiveRollouts: progressiveRolloutsEnabled,
+				}
 
-			got, reason, err := r.generateApplications(argov1alpha1.ApplicationSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "name",
-					Namespace: "namespace",
-				},
-				Spec: argov1alpha1.ApplicationSetSpec{
-					Generators: []argov1alpha1.ApplicationSetGenerator{generator},
-					Template:   cc.template,
-				},
+				got, reason, err := r.generateApplications(argov1alpha1.ApplicationSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "name",
+						Namespace: "namespace",
+					},
+					Spec: argov1alpha1.ApplicationSetSpec{
+						Generators: []argov1alpha1.ApplicationSetGenerator{generator},
+						Template:   cc.template,
+					},
+				})
+
+				if cc.expectErr {
+					assert.Error(t, err)
+				} else {
+					assert.NoError(t, err)
+				}
+				assert.Equal(t, expectedApps, got)
+				assert.Equal(t, cc.expectedReason, reason)
+				generatorMock.AssertNumberOfCalls(t, "GenerateParams", 1)
+
+				if cc.generateParamsError == nil {
+					rendererMock.AssertNumberOfCalls(t, "RenderTemplateParams", len(cc.params))
+				}
+
 			})
-
-			if cc.expectErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-			assert.Equal(t, expectedApps, got)
-			assert.Equal(t, cc.expectedReason, reason)
-			generatorMock.AssertNumberOfCalls(t, "GenerateParams", 1)
-
-			if cc.generateParamsError == nil {
-				rendererMock.AssertNumberOfCalls(t, "RenderTemplateParams", len(cc.params))
-			}
-
-		})
+		}
 	}
 
 }
@@ -266,49 +271,53 @@ func TestMergeTemplateApplications(t *testing.T) {
 	} {
 		cc := c
 
-		t.Run(cc.name, func(t *testing.T) {
+		for _, progressiveRolloutsEnabled := range []bool{true, false} {
+			name := fmt.Sprintf("%s (progressiveRolloutsEnabled=%v)", cc.name, progressiveRolloutsEnabled)
+			t.Run(name, func(t *testing.T) {
 
-			generatorMock := generatorMock{}
-			generator := argov1alpha1.ApplicationSetGenerator{
-				List: &argov1alpha1.ListGenerator{},
-			}
+				generatorMock := generatorMock{}
+				generator := argov1alpha1.ApplicationSetGenerator{
+					List: &argov1alpha1.ListGenerator{},
+				}
 
-			generatorMock.On("GenerateParams", &generator).
-				Return(cc.params, nil)
+				generatorMock.On("GenerateParams", &generator).
+					Return(cc.params, nil)
 
-			generatorMock.On("GetTemplate", &generator).
-				Return(&cc.overrideTemplate)
+				generatorMock.On("GetTemplate", &generator).
+					Return(&cc.overrideTemplate)
 
-			rendererMock := rendererMock{}
+				rendererMock := rendererMock{}
 
-			rendererMock.On("RenderTemplateParams", getTempApplication(cc.expectedMerged), cc.params[0], false).
-				Return(&cc.expectedApps[0], nil)
+				rendererMock.On("RenderTemplateParams", getTempApplication(cc.expectedMerged), cc.params[0], false).
+					Return(&cc.expectedApps[0], nil)
 
-			r := ApplicationSetReconciler{
-				Client:   client,
-				Scheme:   scheme,
-				Recorder: record.NewFakeRecorder(1),
-				Generators: map[string]generators.Generator{
-					"List": &generatorMock,
+				r := ApplicationSetReconciler{
+					Client:   client,
+					Scheme:   scheme,
+					Recorder: record.NewFakeRecorder(1),
+					Generators: map[string]generators.Generator{
+						"List": &generatorMock,
+					},
+					Renderer:                  &rendererMock,
+					KubeClientset:             kubefake.NewSimpleClientset(),
+					EnableProgressiveRollouts: progressiveRolloutsEnabled,
+				}
+
+				got, _, _ := r.generateApplications(argov1alpha1.ApplicationSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "name",
+						Namespace: "namespace",
+					},
+					Spec: argov1alpha1.ApplicationSetSpec{
+						Generators: []argov1alpha1.ApplicationSetGenerator{generator},
+						Template:   cc.template,
+					},
 				},
-				Renderer:      &rendererMock,
-				KubeClientset: kubefake.NewSimpleClientset(),
-			}
+				)
 
-			got, _, _ := r.generateApplications(argov1alpha1.ApplicationSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "name",
-					Namespace: "namespace",
-				},
-				Spec: argov1alpha1.ApplicationSetSpec{
-					Generators: []argov1alpha1.ApplicationSetGenerator{generator},
-					Template:   cc.template,
-				},
-			},
-			)
-
-			assert.Equal(t, cc.expectedApps, got)
-		})
+				assert.Equal(t, cc.expectedApps, got)
+			})
+		}
 	}
 
 }
@@ -824,39 +833,43 @@ func TestCreateOrUpdateInCluster(t *testing.T) {
 		},
 	} {
 
-		t.Run(c.name, func(t *testing.T) {
+		for _, progressiveRolloutsEnabled := range []bool{true, false} {
+			name := fmt.Sprintf("%s (progressiveRolloutsEnabled=%v)", c.name, progressiveRolloutsEnabled)
+			t.Run(name, func(t *testing.T) {
 
-			initObjs := []crtclient.Object{&c.appSet}
+				initObjs := []crtclient.Object{&c.appSet}
 
-			for _, a := range c.existingApps {
-				err = controllerutil.SetControllerReference(&c.appSet, &a, scheme)
+				for _, a := range c.existingApps {
+					err = controllerutil.SetControllerReference(&c.appSet, &a, scheme)
+					assert.Nil(t, err)
+					initObjs = append(initObjs, &a)
+				}
+
+				client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(initObjs...).Build()
+
+				r := ApplicationSetReconciler{
+					Client:                    client,
+					Scheme:                    scheme,
+					Recorder:                  record.NewFakeRecorder(len(initObjs) + len(c.expected)),
+					EnableProgressiveRollouts: progressiveRolloutsEnabled,
+				}
+
+				err = r.createOrUpdateInCluster(context.TODO(), c.appSet, c.desiredApps)
 				assert.Nil(t, err)
-				initObjs = append(initObjs, &a)
-			}
 
-			client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(initObjs...).Build()
+				for _, obj := range c.expected {
+					got := &argov1alpha1.Application{}
+					_ = client.Get(context.Background(), crtclient.ObjectKey{
+						Namespace: obj.Namespace,
+						Name:      obj.Name,
+					}, got)
 
-			r := ApplicationSetReconciler{
-				Client:   client,
-				Scheme:   scheme,
-				Recorder: record.NewFakeRecorder(len(initObjs) + len(c.expected)),
-			}
-
-			err = r.createOrUpdateInCluster(context.TODO(), c.appSet, c.desiredApps)
-			assert.Nil(t, err)
-
-			for _, obj := range c.expected {
-				got := &argov1alpha1.Application{}
-				_ = client.Get(context.Background(), crtclient.ObjectKey{
-					Namespace: obj.Namespace,
-					Name:      obj.Name,
-				}, got)
-
-				err = controllerutil.SetControllerReference(&c.appSet, &obj, r.Scheme)
-				assert.Nil(t, err)
-				assert.Equal(t, obj, *got)
-			}
-		})
+					err = controllerutil.SetControllerReference(&c.appSet, &obj, r.Scheme)
+					assert.Nil(t, err)
+					assert.Equal(t, obj, *got)
+				}
+			})
+		}
 	}
 }
 
@@ -896,91 +909,96 @@ func TestRemoveFinalizerOnInvalidDestination_FinalizerTypes(t *testing.T) {
 			expectedFinalizers: []string{"non-argo-finalizer"},
 		},
 	} {
-		t.Run(c.name, func(t *testing.T) {
+		for _, progressiveRolloutsEnabled := range []bool{true, false} {
+			name := fmt.Sprintf("%s (progressiveRolloutsEnabled=%v)", c.name, progressiveRolloutsEnabled)
+			t.Run(name, func(t *testing.T) {
 
-			appSet := argov1alpha1.ApplicationSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "name",
-					Namespace: "namespace",
-				},
-				Spec: argov1alpha1.ApplicationSetSpec{
-					Template: argov1alpha1.ApplicationSetTemplate{
-						Spec: argov1alpha1.ApplicationSpec{
-							Project: "project",
+				appSet := argov1alpha1.ApplicationSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "name",
+						Namespace: "namespace",
+					},
+					Spec: argov1alpha1.ApplicationSetSpec{
+						Template: argov1alpha1.ApplicationSetTemplate{
+							Spec: argov1alpha1.ApplicationSpec{
+								Project: "project",
+							},
 						},
 					},
-				},
-			}
+				}
 
-			app := argov1alpha1.Application{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:       "app1",
-					Finalizers: c.existingFinalizers,
-				},
-				Spec: argov1alpha1.ApplicationSpec{
-					Project: "project",
-					Source:  argov1alpha1.ApplicationSource{Path: "path", TargetRevision: "revision", RepoURL: "repoURL"},
-					// Destination is always invalid, for this test:
-					Destination: argov1alpha1.ApplicationDestination{Name: "my-cluster", Namespace: "namespace"},
-				},
-			}
-
-			initObjs := []crtclient.Object{&app, &appSet}
-
-			client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(initObjs...).Build()
-			secret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "my-secret",
-					Namespace: "namespace",
-					Labels: map[string]string{
-						generators.ArgoCDSecretTypeLabel: generators.ArgoCDSecretTypeCluster,
+				app := argov1alpha1.Application{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       "app1",
+						Finalizers: c.existingFinalizers,
 					},
-				},
-				Data: map[string][]byte{
-					// Since this test requires the cluster to be an invalid destination, we
-					// always return a cluster named 'my-cluster2' (different from app 'my-cluster', above)
-					"name":   []byte("mycluster2"),
-					"server": []byte("https://kubernetes.default.svc"),
-					"config": []byte("{\"username\":\"foo\",\"password\":\"foo\"}"),
-				},
-			}
+					Spec: argov1alpha1.ApplicationSpec{
+						Project: "project",
+						Source:  argov1alpha1.ApplicationSource{Path: "path", TargetRevision: "revision", RepoURL: "repoURL"},
+						// Destination is always invalid, for this test:
+						Destination: argov1alpha1.ApplicationDestination{Name: "my-cluster", Namespace: "namespace"},
+					},
+				}
 
-			objects := append([]runtime.Object{}, secret)
-			kubeclientset := kubefake.NewSimpleClientset(objects...)
+				initObjs := []crtclient.Object{&app, &appSet}
 
-			r := ApplicationSetReconciler{
-				Client:        client,
-				Scheme:        scheme,
-				Recorder:      record.NewFakeRecorder(10),
-				KubeClientset: kubeclientset,
-			}
-			//settingsMgr := settings.NewSettingsManager(context.TODO(), kubeclientset, "namespace")
-			//argoDB := db.NewDB("namespace", settingsMgr, r.KubeClientset)
-			//clusterList, err := argoDB.ListClusters(context.Background())
-			clusterList, err := utils.ListClusters(context.Background(), kubeclientset, "namespace")
-			assert.NoError(t, err, "Unexpected error")
+				client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(initObjs...).Build()
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-secret",
+						Namespace: "namespace",
+						Labels: map[string]string{
+							generators.ArgoCDSecretTypeLabel: generators.ArgoCDSecretTypeCluster,
+						},
+					},
+					Data: map[string][]byte{
+						// Since this test requires the cluster to be an invalid destination, we
+						// always return a cluster named 'my-cluster2' (different from app 'my-cluster', above)
+						"name":   []byte("mycluster2"),
+						"server": []byte("https://kubernetes.default.svc"),
+						"config": []byte("{\"username\":\"foo\",\"password\":\"foo\"}"),
+					},
+				}
 
-			appLog := log.WithFields(log.Fields{"app": app.Name, "appSet": ""})
+				objects := append([]runtime.Object{}, secret)
+				kubeclientset := kubefake.NewSimpleClientset(objects...)
 
-			appInputParam := app.DeepCopy()
+				r := ApplicationSetReconciler{
+					Client:                    client,
+					Scheme:                    scheme,
+					Recorder:                  record.NewFakeRecorder(10),
+					KubeClientset:             kubeclientset,
+					EnableProgressiveRollouts: progressiveRolloutsEnabled,
+				}
+				//settingsMgr := settings.NewSettingsManager(context.TODO(), kubeclientset, "namespace")
+				//argoDB := db.NewDB("namespace", settingsMgr, r.KubeClientset)
+				//clusterList, err := argoDB.ListClusters(context.Background())
+				clusterList, err := utils.ListClusters(context.Background(), kubeclientset, "namespace")
+				assert.NoError(t, err, "Unexpected error")
 
-			err = r.removeFinalizerOnInvalidDestination(context.Background(), appSet, appInputParam, clusterList, appLog)
-			assert.NoError(t, err, "Unexpected error")
+				appLog := log.WithFields(log.Fields{"app": app.Name, "appSet": ""})
 
-			retrievedApp := argov1alpha1.Application{}
-			err = client.Get(context.Background(), crtclient.ObjectKeyFromObject(&app), &retrievedApp)
-			assert.NoError(t, err, "Unexpected error")
+				appInputParam := app.DeepCopy()
 
-			// App on the cluster should have the expected finalizers
-			assert.ElementsMatch(t, c.expectedFinalizers, retrievedApp.Finalizers)
+				err = r.removeFinalizerOnInvalidDestination(context.Background(), appSet, appInputParam, clusterList, appLog)
+				assert.NoError(t, err, "Unexpected error")
 
-			// App object passed in as a parameter should have the expected finaliers
-			assert.ElementsMatch(t, c.expectedFinalizers, appInputParam.Finalizers)
+				retrievedApp := argov1alpha1.Application{}
+				err = client.Get(context.Background(), crtclient.ObjectKeyFromObject(&app), &retrievedApp)
+				assert.NoError(t, err, "Unexpected error")
 
-			bytes, _ := json.MarshalIndent(retrievedApp, "", "  ")
-			t.Log("Contents of app after call:", string(bytes))
+				// App on the cluster should have the expected finalizers
+				assert.ElementsMatch(t, c.expectedFinalizers, retrievedApp.Finalizers)
 
-		})
+				// App object passed in as a parameter should have the expected finaliers
+				assert.ElementsMatch(t, c.expectedFinalizers, appInputParam.Finalizers)
+
+				bytes, _ := json.MarshalIndent(retrievedApp, "", "  ")
+				t.Log("Contents of app after call:", string(bytes))
+
+			})
+		}
+
 	}
 }
 
@@ -1057,89 +1075,92 @@ func TestRemoveFinalizerOnInvalidDestination_DestinationTypes(t *testing.T) {
 			expectFinalizerRemoved: false,
 		},
 	} {
+		for _, progressiveRolloutsEnabled := range []bool{true, false} {
+			name := fmt.Sprintf("%s (progressiveRolloutsEnabled=%v)", c.name, progressiveRolloutsEnabled)
+			t.Run(name, func(t *testing.T) {
 
-		t.Run(c.name, func(t *testing.T) {
-
-			appSet := argov1alpha1.ApplicationSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "name",
-					Namespace: "namespace",
-				},
-				Spec: argov1alpha1.ApplicationSetSpec{
-					Template: argov1alpha1.ApplicationSetTemplate{
-						Spec: argov1alpha1.ApplicationSpec{
-							Project: "project",
+				appSet := argov1alpha1.ApplicationSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "name",
+						Namespace: "namespace",
+					},
+					Spec: argov1alpha1.ApplicationSetSpec{
+						Template: argov1alpha1.ApplicationSetTemplate{
+							Spec: argov1alpha1.ApplicationSpec{
+								Project: "project",
+							},
 						},
 					},
-				},
-			}
+				}
 
-			app := argov1alpha1.Application{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:       "app1",
-					Finalizers: []string{argov1alpha1.ResourcesFinalizerName},
-				},
-				Spec: argov1alpha1.ApplicationSpec{
-					Project:     "project",
-					Source:      argov1alpha1.ApplicationSource{Path: "path", TargetRevision: "revision", RepoURL: "repoURL"},
-					Destination: c.destinationField,
-				},
-			}
-
-			initObjs := []crtclient.Object{&app, &appSet}
-
-			client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(initObjs...).Build()
-			secret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "my-secret",
-					Namespace: "namespace",
-					Labels: map[string]string{
-						generators.ArgoCDSecretTypeLabel: generators.ArgoCDSecretTypeCluster,
+				app := argov1alpha1.Application{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       "app1",
+						Finalizers: []string{argov1alpha1.ResourcesFinalizerName},
 					},
-				},
-				Data: map[string][]byte{
-					// Since this test requires the cluster to be an invalid destination, we
-					// always return a cluster named 'my-cluster2' (different from app 'my-cluster', above)
-					"name":   []byte("mycluster2"),
-					"server": []byte("https://kubernetes.default.svc"),
-					"config": []byte("{\"username\":\"foo\",\"password\":\"foo\"}"),
-				},
-			}
+					Spec: argov1alpha1.ApplicationSpec{
+						Project:     "project",
+						Source:      argov1alpha1.ApplicationSource{Path: "path", TargetRevision: "revision", RepoURL: "repoURL"},
+						Destination: c.destinationField,
+					},
+				}
 
-			objects := append([]runtime.Object{}, secret)
-			kubeclientset := kubefake.NewSimpleClientset(objects...)
+				initObjs := []crtclient.Object{&app, &appSet}
 
-			r := ApplicationSetReconciler{
-				Client:        client,
-				Scheme:        scheme,
-				Recorder:      record.NewFakeRecorder(10),
-				KubeClientset: kubeclientset,
-			}
-			// settingsMgr := settings.NewSettingsManager(context.TODO(), kubeclientset, "argocd")
-			// argoDB := db.NewDB("argocd", settingsMgr, r.KubeClientset)
-			// clusterList, err := argoDB.ListClusters(context.Background())
-			clusterList, err := utils.ListClusters(context.Background(), kubeclientset, "namespace")
-			assert.NoError(t, err, "Unexpected error")
+				client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(initObjs...).Build()
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-secret",
+						Namespace: "namespace",
+						Labels: map[string]string{
+							generators.ArgoCDSecretTypeLabel: generators.ArgoCDSecretTypeCluster,
+						},
+					},
+					Data: map[string][]byte{
+						// Since this test requires the cluster to be an invalid destination, we
+						// always return a cluster named 'my-cluster2' (different from app 'my-cluster', above)
+						"name":   []byte("mycluster2"),
+						"server": []byte("https://kubernetes.default.svc"),
+						"config": []byte("{\"username\":\"foo\",\"password\":\"foo\"}"),
+					},
+				}
 
-			appLog := log.WithFields(log.Fields{"app": app.Name, "appSet": ""})
+				objects := append([]runtime.Object{}, secret)
+				kubeclientset := kubefake.NewSimpleClientset(objects...)
 
-			appInputParam := app.DeepCopy()
+				r := ApplicationSetReconciler{
+					Client:                    client,
+					Scheme:                    scheme,
+					Recorder:                  record.NewFakeRecorder(10),
+					KubeClientset:             kubeclientset,
+					EnableProgressiveRollouts: progressiveRolloutsEnabled,
+				}
+				// settingsMgr := settings.NewSettingsManager(context.TODO(), kubeclientset, "argocd")
+				// argoDB := db.NewDB("argocd", settingsMgr, r.KubeClientset)
+				// clusterList, err := argoDB.ListClusters(context.Background())
+				clusterList, err := utils.ListClusters(context.Background(), kubeclientset, "namespace")
+				assert.NoError(t, err, "Unexpected error")
 
-			err = r.removeFinalizerOnInvalidDestination(context.Background(), appSet, appInputParam, clusterList, appLog)
-			assert.NoError(t, err, "Unexpected error")
+				appLog := log.WithFields(log.Fields{"app": app.Name, "appSet": ""})
 
-			retrievedApp := argov1alpha1.Application{}
-			err = client.Get(context.Background(), crtclient.ObjectKeyFromObject(&app), &retrievedApp)
-			assert.NoError(t, err, "Unexpected error")
+				appInputParam := app.DeepCopy()
 
-			finalizerRemoved := len(retrievedApp.Finalizers) == 0
+				err = r.removeFinalizerOnInvalidDestination(context.Background(), appSet, appInputParam, clusterList, appLog)
+				assert.NoError(t, err, "Unexpected error")
 
-			assert.True(t, c.expectFinalizerRemoved == finalizerRemoved)
+				retrievedApp := argov1alpha1.Application{}
+				err = client.Get(context.Background(), crtclient.ObjectKeyFromObject(&app), &retrievedApp)
+				assert.NoError(t, err, "Unexpected error")
 
-			bytes, _ := json.MarshalIndent(retrievedApp, "", "  ")
-			t.Log("Contents of app after call:", string(bytes))
+				finalizerRemoved := len(retrievedApp.Finalizers) == 0
 
-		})
+				assert.True(t, c.expectFinalizerRemoved == finalizerRemoved)
+
+				bytes, _ := json.MarshalIndent(retrievedApp, "", "  ")
+				t.Log("Contents of app after call:", string(bytes))
+
+			})
+		}
 	}
 }
 
@@ -1302,38 +1323,43 @@ func TestCreateApplications(t *testing.T) {
 			},
 		},
 	} {
-		initObjs := []crtclient.Object{&c.appSet}
-		for _, a := range c.existsApps {
-			err = controllerutil.SetControllerReference(&c.appSet, &a, scheme)
-			assert.Nil(t, err)
-			initObjs = append(initObjs, &a)
-		}
 
-		client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(initObjs...).Build()
+		for _, progressiveRolloutsEnabled := range []bool{true, false} {
+			t.Run(fmt.Sprintf("progressiveRolloutsEnabled=%v", progressiveRolloutsEnabled), func(t *testing.T) {
+				initObjs := []crtclient.Object{&c.appSet}
+				for _, a := range c.existsApps {
+					err = controllerutil.SetControllerReference(&c.appSet, &a, scheme)
+					assert.Nil(t, err)
+					initObjs = append(initObjs, &a)
+				}
 
-		r := ApplicationSetReconciler{
-			Client:   client,
-			Scheme:   scheme,
-			Recorder: record.NewFakeRecorder(len(initObjs) + len(c.expected)),
-		}
+				client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(initObjs...).Build()
 
-		err = r.createInCluster(context.TODO(), c.appSet, c.apps)
-		assert.Nil(t, err)
+				r := ApplicationSetReconciler{
+					Client:                    client,
+					Scheme:                    scheme,
+					Recorder:                  record.NewFakeRecorder(len(initObjs) + len(c.expected)),
+					EnableProgressiveRollouts: progressiveRolloutsEnabled,
+				}
 
-		for _, obj := range c.expected {
-			got := &argov1alpha1.Application{}
-			_ = client.Get(context.Background(), crtclient.ObjectKey{
-				Namespace: obj.Namespace,
-				Name:      obj.Name,
-			}, got)
+				err = r.createInCluster(context.TODO(), c.appSet, c.apps)
+				assert.Nil(t, err)
 
-			err = controllerutil.SetControllerReference(&c.appSet, &obj, r.Scheme)
-			assert.Nil(t, err)
+				for _, obj := range c.expected {
+					got := &argov1alpha1.Application{}
+					_ = client.Get(context.Background(), crtclient.ObjectKey{
+						Namespace: obj.Namespace,
+						Name:      obj.Name,
+					}, got)
 
-			assert.Equal(t, obj, *got)
+					err = controllerutil.SetControllerReference(&c.appSet, &obj, r.Scheme)
+					assert.Nil(t, err)
+
+					assert.Equal(t, obj, *got)
+				}
+			})
 		}
 	}
-
 }
 
 func TestDeleteInCluster(t *testing.T) {
@@ -1444,98 +1470,112 @@ func TestDeleteInCluster(t *testing.T) {
 			},
 		},
 	} {
-		initObjs := []crtclient.Object{&c.appSet}
-		for _, a := range c.existingApps {
-			temp := a
-			err = controllerutil.SetControllerReference(&c.appSet, &temp, scheme)
-			assert.Nil(t, err)
-			initObjs = append(initObjs, &temp)
-		}
+		for _, progressiveRolloutsEnabled := range []bool{true, false} {
+			name := fmt.Sprintf("progressiveRolloutsEnabled=%v", progressiveRolloutsEnabled)
+			t.Run(name, func(t *testing.T) {
 
-		client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(initObjs...).Build()
+				initObjs := []crtclient.Object{&c.appSet}
+				for _, a := range c.existingApps {
+					temp := a
+					err = controllerutil.SetControllerReference(&c.appSet, &temp, scheme)
+					assert.Nil(t, err)
+					initObjs = append(initObjs, &temp)
+				}
 
-		r := ApplicationSetReconciler{
-			Client:        client,
-			Scheme:        scheme,
-			Recorder:      record.NewFakeRecorder(len(initObjs) + len(c.expected)),
-			KubeClientset: kubefake.NewSimpleClientset(),
-		}
+				client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(initObjs...).Build()
 
-		err = r.deleteInCluster(context.TODO(), c.appSet, c.desiredApps)
-		assert.Nil(t, err)
+				r := ApplicationSetReconciler{
+					Client:                    client,
+					Scheme:                    scheme,
+					Recorder:                  record.NewFakeRecorder(len(initObjs) + len(c.expected)),
+					KubeClientset:             kubefake.NewSimpleClientset(),
+					EnableProgressiveRollouts: progressiveRolloutsEnabled,
+				}
 
-		// For each of the expected objects, verify they exist on the cluster
-		for _, obj := range c.expected {
-			got := &argov1alpha1.Application{}
-			_ = client.Get(context.Background(), crtclient.ObjectKey{
-				Namespace: obj.Namespace,
-				Name:      obj.Name,
-			}, got)
+				err = r.deleteInCluster(context.TODO(), c.appSet, c.desiredApps)
+				assert.Nil(t, err)
 
-			err = controllerutil.SetControllerReference(&c.appSet, &obj, r.Scheme)
-			assert.Nil(t, err)
+				// For each of the expected objects, verify they exist on the cluster
+				for _, obj := range c.expected {
+					got := &argov1alpha1.Application{}
+					_ = client.Get(context.Background(), crtclient.ObjectKey{
+						Namespace: obj.Namespace,
+						Name:      obj.Name,
+					}, got)
 
-			assert.Equal(t, obj, *got)
-		}
+					err = controllerutil.SetControllerReference(&c.appSet, &obj, r.Scheme)
+					assert.Nil(t, err)
 
-		// Verify each of the unexpected objs cannot be found
-		for _, obj := range c.notExpected {
-			got := &argov1alpha1.Application{}
-			err := client.Get(context.Background(), crtclient.ObjectKey{
-				Namespace: obj.Namespace,
-				Name:      obj.Name,
-			}, got)
+					assert.Equal(t, obj, *got)
+				}
 
-			assert.EqualError(t, err, fmt.Sprintf("applications.argoproj.io \"%s\" not found", obj.Name))
+				// Verify each of the unexpected objs cannot be found
+				for _, obj := range c.notExpected {
+					got := &argov1alpha1.Application{}
+					err := client.Get(context.Background(), crtclient.ObjectKey{
+						Namespace: obj.Namespace,
+						Name:      obj.Name,
+					}, got)
+
+					assert.EqualError(t, err, fmt.Sprintf("applications.argoproj.io \"%s\" not found", obj.Name))
+				}
+			})
 		}
 	}
 }
 
 func TestGetMinRequeueAfter(t *testing.T) {
-	scheme := runtime.NewScheme()
-	err := argov1alpha1.AddToScheme(scheme)
-	assert.Nil(t, err)
-	err = argov1alpha1.AddToScheme(scheme)
-	assert.Nil(t, err)
+	for _, progressiveRolloutsEnabled := range []bool{true, false} {
+		name := fmt.Sprintf("progressiveRolloutsEnabled=%v", progressiveRolloutsEnabled)
+		t.Run(name, func(t *testing.T) {
 
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+			scheme := runtime.NewScheme()
+			err := argov1alpha1.AddToScheme(scheme)
+			assert.Nil(t, err)
+			err = argov1alpha1.AddToScheme(scheme)
+			assert.Nil(t, err)
 
-	generator := argov1alpha1.ApplicationSetGenerator{
-		List:     &argov1alpha1.ListGenerator{},
-		Git:      &argov1alpha1.GitGenerator{},
-		Clusters: &argov1alpha1.ClusterGenerator{},
+			client := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+			generator := argov1alpha1.ApplicationSetGenerator{
+				List:     &argov1alpha1.ListGenerator{},
+				Git:      &argov1alpha1.GitGenerator{},
+				Clusters: &argov1alpha1.ClusterGenerator{},
+			}
+
+			generatorMock0 := generatorMock{}
+			generatorMock0.On("GetRequeueAfter", &generator).
+				Return(generators.NoRequeueAfter)
+
+			generatorMock1 := generatorMock{}
+			generatorMock1.On("GetRequeueAfter", &generator).
+				Return(time.Duration(1) * time.Second)
+
+			generatorMock10 := generatorMock{}
+			generatorMock10.On("GetRequeueAfter", &generator).
+				Return(time.Duration(10) * time.Second)
+
+			r := ApplicationSetReconciler{
+				Client:   client,
+				Scheme:   scheme,
+				Recorder: record.NewFakeRecorder(0),
+				Generators: map[string]generators.Generator{
+					"List":     &generatorMock10,
+					"Git":      &generatorMock1,
+					"Clusters": &generatorMock1,
+				},
+				EnableProgressiveRollouts: progressiveRolloutsEnabled,
+			}
+
+			got := r.getMinRequeueAfter(&argov1alpha1.ApplicationSet{
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Generators: []argov1alpha1.ApplicationSetGenerator{generator},
+				},
+			})
+
+			assert.Equal(t, time.Duration(1)*time.Second, got)
+		})
 	}
-
-	generatorMock0 := generatorMock{}
-	generatorMock0.On("GetRequeueAfter", &generator).
-		Return(generators.NoRequeueAfter)
-
-	generatorMock1 := generatorMock{}
-	generatorMock1.On("GetRequeueAfter", &generator).
-		Return(time.Duration(1) * time.Second)
-
-	generatorMock10 := generatorMock{}
-	generatorMock10.On("GetRequeueAfter", &generator).
-		Return(time.Duration(10) * time.Second)
-
-	r := ApplicationSetReconciler{
-		Client:   client,
-		Scheme:   scheme,
-		Recorder: record.NewFakeRecorder(0),
-		Generators: map[string]generators.Generator{
-			"List":     &generatorMock10,
-			"Git":      &generatorMock1,
-			"Clusters": &generatorMock1,
-		},
-	}
-
-	got := r.getMinRequeueAfter(&argov1alpha1.ApplicationSet{
-		Spec: argov1alpha1.ApplicationSetSpec{
-			Generators: []argov1alpha1.ApplicationSetGenerator{generator},
-		},
-	})
-
-	assert.Equal(t, time.Duration(1)*time.Second, got)
 }
 
 func TestValidateGeneratedApplications(t *testing.T) {
@@ -1699,294 +1739,315 @@ func TestValidateGeneratedApplications(t *testing.T) {
 			validationErrors: map[int]error{0: fmt.Errorf("application destination spec is invalid: unable to find destination server: there are no clusters with this name: nonexistent-cluster")},
 		},
 	} {
+		for _, progressiveRolloutsEnabled := range []bool{true, false} {
+			name := fmt.Sprintf("%s (progressiveRolloutsEnabled=%v)", cc.name, progressiveRolloutsEnabled)
+			t.Run(name, func(t *testing.T) {
 
-		t.Run(cc.name, func(t *testing.T) {
-
-			secret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "my-secret",
-					Namespace: "namespace",
-					Labels: map[string]string{
-						generators.ArgoCDSecretTypeLabel: generators.ArgoCDSecretTypeCluster,
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-secret",
+						Namespace: "namespace",
+						Labels: map[string]string{
+							generators.ArgoCDSecretTypeLabel: generators.ArgoCDSecretTypeCluster,
+						},
 					},
-				},
-				Data: map[string][]byte{
-					"name":   []byte("my-cluster"),
-					"server": []byte("https://kubernetes.default.svc"),
-					"config": []byte("{\"username\":\"foo\",\"password\":\"foo\"}"),
-				},
-			}
-
-			objects := append([]runtime.Object{}, secret)
-			kubeclientset := kubefake.NewSimpleClientset(objects...)
-
-			argoDBMock := dbmocks.ArgoDB{}
-			argoDBMock.On("GetCluster", mock.Anything, "https://kubernetes.default.svc").Return(&myCluster, nil)
-			argoDBMock.On("ListClusters", mock.Anything).Return(&argov1alpha1.ClusterList{Items: []argov1alpha1.Cluster{
-				myCluster,
-			}}, nil)
-
-			argoObjs := []runtime.Object{myProject}
-			for _, app := range cc.apps {
-				argoObjs = append(argoObjs, &app)
-			}
-
-			r := ApplicationSetReconciler{
-				Client:           client,
-				Scheme:           scheme,
-				Recorder:         record.NewFakeRecorder(1),
-				Generators:       map[string]generators.Generator{},
-				ArgoDB:           &argoDBMock,
-				ArgoAppClientset: appclientset.NewSimpleClientset(argoObjs...),
-				KubeClientset:    kubeclientset,
-			}
-
-			appSetInfo := argov1alpha1.ApplicationSet{}
-
-			validationErrors, _ := r.validateGeneratedApplications(context.TODO(), cc.apps, appSetInfo, "namespace")
-			var errorMessages []string
-			for _, v := range validationErrors {
-				errorMessages = append(errorMessages, v.Error())
-			}
-
-			if len(errorMessages) == 0 {
-				assert.Equal(t, len(cc.expectedErrors), 0, "Expected errors but none were seen")
-			} else {
-				// An error was returned: it should be expected
-				matched := false
-				for _, expectedErr := range cc.expectedErrors {
-					foundMatch := strings.Contains(strings.Join(errorMessages, ";"), expectedErr)
-					assert.True(t, foundMatch, "Unble to locate expected error: %s", cc.expectedErrors)
-					matched = matched || foundMatch
+					Data: map[string][]byte{
+						"name":   []byte("my-cluster"),
+						"server": []byte("https://kubernetes.default.svc"),
+						"config": []byte("{\"username\":\"foo\",\"password\":\"foo\"}"),
+					},
 				}
-				assert.True(t, matched, "An unexpected error occurrred: %v", err)
-				// validation message was returned: it should be expected
-				matched = false
-				foundMatch := reflect.DeepEqual(validationErrors, cc.validationErrors)
-				var message string
+
+				objects := append([]runtime.Object{}, secret)
+				kubeclientset := kubefake.NewSimpleClientset(objects...)
+
+				argoDBMock := dbmocks.ArgoDB{}
+				argoDBMock.On("GetCluster", mock.Anything, "https://kubernetes.default.svc").Return(&myCluster, nil)
+				argoDBMock.On("ListClusters", mock.Anything).Return(&argov1alpha1.ClusterList{Items: []argov1alpha1.Cluster{
+					myCluster,
+				}}, nil)
+
+				argoObjs := []runtime.Object{myProject}
+				for _, app := range cc.apps {
+					argoObjs = append(argoObjs, &app)
+				}
+
+				r := ApplicationSetReconciler{
+					Client:                    client,
+					Scheme:                    scheme,
+					Recorder:                  record.NewFakeRecorder(1),
+					Generators:                map[string]generators.Generator{},
+					ArgoDB:                    &argoDBMock,
+					ArgoAppClientset:          appclientset.NewSimpleClientset(argoObjs...),
+					KubeClientset:             kubeclientset,
+					EnableProgressiveRollouts: progressiveRolloutsEnabled,
+				}
+
+				appSetInfo := argov1alpha1.ApplicationSet{}
+
+				validationErrors, _ := r.validateGeneratedApplications(context.TODO(), cc.apps, appSetInfo, "namespace")
+				var errorMessages []string
 				for _, v := range validationErrors {
-					message = v.Error()
-					break
+					errorMessages = append(errorMessages, v.Error())
 				}
-				assert.True(t, foundMatch, "Unble to locate validation message: %s", message)
-				matched = matched || foundMatch
-				assert.True(t, matched, "An unexpected error occurrred: %v", err)
-			}
-		})
+
+				if len(errorMessages) == 0 {
+					assert.Equal(t, len(cc.expectedErrors), 0, "Expected errors but none were seen")
+				} else {
+					// An error was returned: it should be expected
+					matched := false
+					for _, expectedErr := range cc.expectedErrors {
+						foundMatch := strings.Contains(strings.Join(errorMessages, ";"), expectedErr)
+						assert.True(t, foundMatch, "Unble to locate expected error: %s", cc.expectedErrors)
+						matched = matched || foundMatch
+					}
+					assert.True(t, matched, "An unexpected error occurrred: %v", err)
+					// validation message was returned: it should be expected
+					matched = false
+					foundMatch := reflect.DeepEqual(validationErrors, cc.validationErrors)
+					var message string
+					for _, v := range validationErrors {
+						message = v.Error()
+						break
+					}
+					assert.True(t, foundMatch, "Unble to locate validation message: %s", message)
+					matched = matched || foundMatch
+					assert.True(t, matched, "An unexpected error occurrred: %v", err)
+				}
+			})
+		}
 	}
 }
 
 func TestReconcilerValidationErrorBehaviour(t *testing.T) {
+	for _, progressiveRolloutsEnabled := range []bool{true, false} {
+		name := fmt.Sprintf("progressiveRolloutsEnabled=%v", progressiveRolloutsEnabled)
+		t.Run(name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			err := argov1alpha1.AddToScheme(scheme)
+			assert.Nil(t, err)
+			err = argov1alpha1.AddToScheme(scheme)
+			assert.Nil(t, err)
 
-	scheme := runtime.NewScheme()
-	err := argov1alpha1.AddToScheme(scheme)
-	assert.Nil(t, err)
-	err = argov1alpha1.AddToScheme(scheme)
-	assert.Nil(t, err)
-
-	defaultProject := argov1alpha1.AppProject{
-		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "argocd"},
-		Spec:       argov1alpha1.AppProjectSpec{SourceRepos: []string{"*"}, Destinations: []argov1alpha1.ApplicationDestination{{Namespace: "*", Server: "https://good-cluster"}}},
-	}
-	appSet := argov1alpha1.ApplicationSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "name",
-			Namespace: "argocd",
-		},
-		Spec: argov1alpha1.ApplicationSetSpec{
-			GoTemplate: true,
-			Generators: []argov1alpha1.ApplicationSetGenerator{
-				{
-					List: &argov1alpha1.ListGenerator{
-						Elements: []apiextensionsv1.JSON{{
-							Raw: []byte(`{"cluster": "good-cluster","url": "https://good-cluster"}`),
-						}, {
-							Raw: []byte(`{"cluster": "bad-cluster","url": "https://bad-cluster"}`),
-						}},
-					},
-				},
-			},
-			Template: argov1alpha1.ApplicationSetTemplate{
-				ApplicationSetTemplateMeta: argov1alpha1.ApplicationSetTemplateMeta{
-					Name:      "{{.cluster}}",
+			defaultProject := argov1alpha1.AppProject{
+				ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "argocd"},
+				Spec:       argov1alpha1.AppProjectSpec{SourceRepos: []string{"*"}, Destinations: []argov1alpha1.ApplicationDestination{{Namespace: "*", Server: "https://good-cluster"}}},
+			}
+			appSet := argov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
 					Namespace: "argocd",
 				},
-				Spec: argov1alpha1.ApplicationSpec{
-					Source:      argov1alpha1.ApplicationSource{RepoURL: "https://github.com/argoproj/argocd-example-apps", Path: "guestbook"},
-					Project:     "default",
-					Destination: argov1alpha1.ApplicationDestination{Server: "{{.url}}"},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					GoTemplate: true,
+					Generators: []argov1alpha1.ApplicationSetGenerator{
+						{
+							List: &argov1alpha1.ListGenerator{
+								Elements: []apiextensionsv1.JSON{{
+									Raw: []byte(`{"cluster": "good-cluster","url": "https://good-cluster"}`),
+								}, {
+									Raw: []byte(`{"cluster": "bad-cluster","url": "https://bad-cluster"}`),
+								}},
+							},
+						},
+					},
+					Template: argov1alpha1.ApplicationSetTemplate{
+						ApplicationSetTemplateMeta: argov1alpha1.ApplicationSetTemplateMeta{
+							Name:      "{{.cluster}}",
+							Namespace: "argocd",
+						},
+						Spec: argov1alpha1.ApplicationSpec{
+							Source:      argov1alpha1.ApplicationSource{RepoURL: "https://github.com/argoproj/argocd-example-apps", Path: "guestbook"},
+							Project:     "default",
+							Destination: argov1alpha1.ApplicationDestination{Server: "{{.url}}"},
+						},
+					},
 				},
-			},
-		},
+			}
+
+			kubeclientset := kubefake.NewSimpleClientset()
+			argoDBMock := dbmocks.ArgoDB{}
+			argoObjs := []runtime.Object{&defaultProject}
+
+			client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&appSet).Build()
+			goodCluster := argov1alpha1.Cluster{Server: "https://good-cluster", Name: "good-cluster"}
+			badCluster := argov1alpha1.Cluster{Server: "https://bad-cluster", Name: "bad-cluster"}
+			argoDBMock.On("GetCluster", mock.Anything, "https://good-cluster").Return(&goodCluster, nil)
+			argoDBMock.On("GetCluster", mock.Anything, "https://bad-cluster").Return(&badCluster, nil)
+			argoDBMock.On("ListClusters", mock.Anything).Return(&argov1alpha1.ClusterList{Items: []argov1alpha1.Cluster{
+				goodCluster,
+			}}, nil)
+
+			r := ApplicationSetReconciler{
+				Log:      ctrl.Log.WithName("controllers").WithName("ApplicationSet"),
+				Client:   client,
+				Scheme:   scheme,
+				Renderer: &utils.Render{},
+				Recorder: record.NewFakeRecorder(1),
+				Generators: map[string]generators.Generator{
+					"List": generators.NewListGenerator(),
+				},
+				ArgoDB:                    &argoDBMock,
+				ArgoAppClientset:          appclientset.NewSimpleClientset(argoObjs...),
+				KubeClientset:             kubeclientset,
+				Policy:                    &utils.SyncPolicy{},
+				EnableProgressiveRollouts: progressiveRolloutsEnabled,
+			}
+
+			req := ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: "argocd",
+					Name:      "name",
+				},
+			}
+
+			// Verify that on validation error, no error is returned, but the object is requeued
+			res, err := r.Reconcile(context.Background(), req)
+			assert.Nil(t, err)
+			assert.True(t, res.RequeueAfter == 0)
+
+			var app argov1alpha1.Application
+
+			// make sure good app got created
+			err = r.Client.Get(context.TODO(), crtclient.ObjectKey{Namespace: "argocd", Name: "good-cluster"}, &app)
+			assert.NoError(t, err)
+			assert.Equal(t, app.Name, "good-cluster")
+
+			// make sure bad app was not created
+			err = r.Client.Get(context.TODO(), crtclient.ObjectKey{Namespace: "argocd", Name: "bad-cluster"}, &app)
+			assert.Error(t, err)
+		})
 	}
-
-	kubeclientset := kubefake.NewSimpleClientset()
-	argoDBMock := dbmocks.ArgoDB{}
-	argoObjs := []runtime.Object{&defaultProject}
-
-	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&appSet).Build()
-	goodCluster := argov1alpha1.Cluster{Server: "https://good-cluster", Name: "good-cluster"}
-	badCluster := argov1alpha1.Cluster{Server: "https://bad-cluster", Name: "bad-cluster"}
-	argoDBMock.On("GetCluster", mock.Anything, "https://good-cluster").Return(&goodCluster, nil)
-	argoDBMock.On("GetCluster", mock.Anything, "https://bad-cluster").Return(&badCluster, nil)
-	argoDBMock.On("ListClusters", mock.Anything).Return(&argov1alpha1.ClusterList{Items: []argov1alpha1.Cluster{
-		goodCluster,
-	}}, nil)
-
-	r := ApplicationSetReconciler{
-		Log:      ctrl.Log.WithName("controllers").WithName("ApplicationSet"),
-		Client:   client,
-		Scheme:   scheme,
-		Renderer: &utils.Render{},
-		Recorder: record.NewFakeRecorder(1),
-		Generators: map[string]generators.Generator{
-			"List": generators.NewListGenerator(),
-		},
-		ArgoDB:           &argoDBMock,
-		ArgoAppClientset: appclientset.NewSimpleClientset(argoObjs...),
-		KubeClientset:    kubeclientset,
-		Policy:           &utils.SyncPolicy{},
-	}
-
-	req := ctrl.Request{
-		NamespacedName: types.NamespacedName{
-			Namespace: "argocd",
-			Name:      "name",
-		},
-	}
-
-	// Verify that on validation error, no error is returned, but the object is requeued
-	res, err := r.Reconcile(context.Background(), req)
-	assert.Nil(t, err)
-	assert.True(t, res.RequeueAfter == 0)
-
-	var app argov1alpha1.Application
-
-	// make sure good app got created
-	err = r.Client.Get(context.TODO(), crtclient.ObjectKey{Namespace: "argocd", Name: "good-cluster"}, &app)
-	assert.NoError(t, err)
-	assert.Equal(t, app.Name, "good-cluster")
-
-	// make sure bad app was not created
-	err = r.Client.Get(context.TODO(), crtclient.ObjectKey{Namespace: "argocd", Name: "bad-cluster"}, &app)
-	assert.Error(t, err)
 }
 
 func TestSetApplicationSetStatusCondition(t *testing.T) {
-	scheme := runtime.NewScheme()
-	err := argov1alpha1.AddToScheme(scheme)
-	assert.Nil(t, err)
-	err = argov1alpha1.AddToScheme(scheme)
-	assert.Nil(t, err)
+	for _, progressiveRolloutsEnabled := range []bool{true, false} {
+		name := fmt.Sprintf("Progressive Rollouts %t", progressiveRolloutsEnabled)
+		t.Run(name, func(t *testing.T) {
 
-	appSet := argov1alpha1.ApplicationSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "name",
-			Namespace: "argocd",
-		},
-		Spec: argov1alpha1.ApplicationSetSpec{
-			Generators: []argov1alpha1.ApplicationSetGenerator{
-				{List: &argov1alpha1.ListGenerator{
-					Elements: []apiextensionsv1.JSON{{
-						Raw: []byte(`{"cluster": "my-cluster","url": "https://kubernetes.default.svc"}`),
-					}},
-				}},
-			},
-			Template: argov1alpha1.ApplicationSetTemplate{},
-		},
+			scheme := runtime.NewScheme()
+			err := argov1alpha1.AddToScheme(scheme)
+			assert.Nil(t, err)
+			err = argov1alpha1.AddToScheme(scheme)
+			assert.Nil(t, err)
+
+			appSet := argov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Generators: []argov1alpha1.ApplicationSetGenerator{
+						{List: &argov1alpha1.ListGenerator{
+							Elements: []apiextensionsv1.JSON{{
+								Raw: []byte(`{"cluster": "my-cluster","url": "https://kubernetes.default.svc"}`),
+							}},
+						}},
+					},
+					Template: argov1alpha1.ApplicationSetTemplate{},
+				},
+			}
+
+			appCondition := argov1alpha1.ApplicationSetCondition{
+				Type:    argov1alpha1.ApplicationSetConditionResourcesUpToDate,
+				Message: "All applications have been generated successfully",
+				Reason:  argov1alpha1.ApplicationSetReasonApplicationSetUpToDate,
+				Status:  argov1alpha1.ApplicationSetConditionStatusTrue,
+			}
+
+			kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
+			argoDBMock := dbmocks.ArgoDB{}
+			argoObjs := []runtime.Object{}
+
+			client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&appSet).Build()
+
+			r := ApplicationSetReconciler{
+				Log:      ctrl.Log.WithName("controllers").WithName("ApplicationSet"),
+				Client:   client,
+				Scheme:   scheme,
+				Renderer: &utils.Render{},
+				Recorder: record.NewFakeRecorder(1),
+				Generators: map[string]generators.Generator{
+					"List": generators.NewListGenerator(),
+				},
+				ArgoDB:                    &argoDBMock,
+				ArgoAppClientset:          appclientset.NewSimpleClientset(argoObjs...),
+				KubeClientset:             kubeclientset,
+				EnableProgressiveRollouts: progressiveRolloutsEnabled,
+			}
+
+			err = r.setApplicationSetStatusCondition(context.TODO(), &appSet, appCondition, true)
+			assert.Nil(t, err)
+
+			assert.Len(t, appSet.Status.Conditions, 3)
+		})
 	}
-
-	appCondition := argov1alpha1.ApplicationSetCondition{
-		Type:    argov1alpha1.ApplicationSetConditionResourcesUpToDate,
-		Message: "All applications have been generated successfully",
-		Reason:  argov1alpha1.ApplicationSetReasonApplicationSetUpToDate,
-		Status:  argov1alpha1.ApplicationSetConditionStatusTrue,
-	}
-
-	kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
-	argoDBMock := dbmocks.ArgoDB{}
-	argoObjs := []runtime.Object{}
-
-	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&appSet).Build()
-
-	r := ApplicationSetReconciler{
-		Log:      ctrl.Log.WithName("controllers").WithName("ApplicationSet"),
-		Client:   client,
-		Scheme:   scheme,
-		Renderer: &utils.Render{},
-		Recorder: record.NewFakeRecorder(1),
-		Generators: map[string]generators.Generator{
-			"List": generators.NewListGenerator(),
-		},
-		ArgoDB:           &argoDBMock,
-		ArgoAppClientset: appclientset.NewSimpleClientset(argoObjs...),
-		KubeClientset:    kubeclientset,
-	}
-
-	err = r.setApplicationSetStatusCondition(context.TODO(), &appSet, appCondition, true)
-	assert.Nil(t, err)
-
-	assert.Len(t, appSet.Status.Conditions, 3)
 }
 
 func TestSetApplicationSetApplicationStatus(t *testing.T) {
-	scheme := runtime.NewScheme()
-	err := argov1alpha1.AddToScheme(scheme)
-	assert.Nil(t, err)
-	err = argov1alpha1.AddToScheme(scheme)
-	assert.Nil(t, err)
+	for _, progressiveRolloutsEnabled := range []bool{true, false} {
+		name := fmt.Sprintf("Progressive Rollouts %t", progressiveRolloutsEnabled)
+		t.Run(name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			err := argov1alpha1.AddToScheme(scheme)
+			assert.Nil(t, err)
+			err = argov1alpha1.AddToScheme(scheme)
+			assert.Nil(t, err)
 
-	appSet := argov1alpha1.ApplicationSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "name",
-			Namespace: "argocd",
-		},
-		Spec: argov1alpha1.ApplicationSetSpec{
-			Generators: []argov1alpha1.ApplicationSetGenerator{
-				{List: &argov1alpha1.ListGenerator{
-					Elements: []apiextensionsv1.JSON{{
-						Raw: []byte(`{"cluster": "my-cluster","url": "https://kubernetes.default.svc"}`),
-					}},
-				}},
-			},
-			Template: argov1alpha1.ApplicationSetTemplate{},
-		},
+			appSet := argov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Generators: []argov1alpha1.ApplicationSetGenerator{
+						{List: &argov1alpha1.ListGenerator{
+							Elements: []apiextensionsv1.JSON{{
+								Raw: []byte(`{"cluster": "my-cluster","url": "https://kubernetes.default.svc"}`),
+							}},
+						}},
+					},
+					Template: argov1alpha1.ApplicationSetTemplate{},
+				},
+			}
+
+			appStatuses := []argov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application:        "my-application",
+					LastTransitionTime: &metav1.Time{},
+					Message:            "testing SetApplicationSetApplicationStatus to Healthy",
+					ObservedHash:       "1",
+					Status:             "Healthy",
+				},
+			}
+
+			kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
+			argoDBMock := dbmocks.ArgoDB{}
+			argoObjs := []runtime.Object{}
+
+			client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&appSet).Build()
+
+			r := ApplicationSetReconciler{
+				Log:      ctrl.Log.WithName("controllers").WithName("ApplicationSet"),
+				Client:   client,
+				Scheme:   scheme,
+				Renderer: &utils.Render{},
+				Recorder: record.NewFakeRecorder(1),
+				Generators: map[string]generators.Generator{
+					"List": generators.NewListGenerator(),
+				},
+				ArgoDB:                    &argoDBMock,
+				ArgoAppClientset:          appclientset.NewSimpleClientset(argoObjs...),
+				KubeClientset:             kubeclientset,
+				EnableProgressiveRollouts: progressiveRolloutsEnabled,
+			}
+
+			err = r.setApplicationSetApplicationStatus(context.TODO(), &appSet, appStatuses)
+			assert.Nil(t, err)
+
+			assert.Len(t, appSet.Status.ApplicationStatus, 1)
+		})
 	}
-
-	appStatuses := []argov1alpha1.ApplicationSetApplicationStatus{
-		{
-			Application:        "my-application",
-			LastTransitionTime: &metav1.Time{},
-			Message:            "testing SetApplicationSetApplicationStatus to Healthy",
-			ObservedHash:       "1",
-			Status:             "Healthy",
-		},
-	}
-
-	kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
-	argoDBMock := dbmocks.ArgoDB{}
-	argoObjs := []runtime.Object{}
-
-	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&appSet).Build()
-
-	r := ApplicationSetReconciler{
-		Log:      ctrl.Log.WithName("controllers").WithName("ApplicationSet"),
-		Client:   client,
-		Scheme:   scheme,
-		Renderer: &utils.Render{},
-		Recorder: record.NewFakeRecorder(1),
-		Generators: map[string]generators.Generator{
-			"List": generators.NewListGenerator(),
-		},
-		ArgoDB:           &argoDBMock,
-		ArgoAppClientset: appclientset.NewSimpleClientset(argoObjs...),
-		KubeClientset:    kubeclientset,
-	}
-
-	err = r.setApplicationSetApplicationStatus(context.TODO(), &appSet, appStatuses)
-	assert.Nil(t, err)
-
-	assert.Len(t, appSet.Status.ApplicationStatus, 1)
 }
 func TestHashApplicaton(t *testing.T) {
 
@@ -2466,28 +2527,33 @@ func TestBuildAppDependencyList(t *testing.T) {
 			},
 		},
 	} {
+		for _, progressiveRolloutsEnabled := range []bool{true, false} {
+			name := fmt.Sprintf("%s (progressiveRolloutsEnabled=%v)", cc.name, progressiveRolloutsEnabled)
+			t.Run(name, func(t *testing.T) {
+				t.Run(cc.name, func(t *testing.T) {
 
-		t.Run(cc.name, func(t *testing.T) {
+					kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
+					argoDBMock := dbmocks.ArgoDB{}
+					argoObjs := []runtime.Object{}
 
-			kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
-			argoDBMock := dbmocks.ArgoDB{}
-			argoObjs := []runtime.Object{}
+					r := ApplicationSetReconciler{
+						Client:                    client,
+						Scheme:                    scheme,
+						Recorder:                  record.NewFakeRecorder(1),
+						Generators:                map[string]generators.Generator{},
+						ArgoDB:                    &argoDBMock,
+						ArgoAppClientset:          appclientset.NewSimpleClientset(argoObjs...),
+						KubeClientset:             kubeclientset,
+						EnableProgressiveRollouts: progressiveRolloutsEnabled,
+					}
 
-			r := ApplicationSetReconciler{
-				Client:           client,
-				Scheme:           scheme,
-				Recorder:         record.NewFakeRecorder(1),
-				Generators:       map[string]generators.Generator{},
-				ArgoDB:           &argoDBMock,
-				ArgoAppClientset: appclientset.NewSimpleClientset(argoObjs...),
-				KubeClientset:    kubeclientset,
-			}
-
-			appDependencyList, appStepMap, err := r.buildAppDependencyList(context.TODO(), cc.appSet, cc.apps)
-			assert.Equal(t, err, nil, "expected no errors, but errors occured")
-			assert.Equal(t, cc.expectedList, appDependencyList, "expected appDependencyList did not match actual")
-			assert.Equal(t, cc.expectedStepMap, appStepMap, "expected appStepMap did not match actual")
-		})
+					appDependencyList, appStepMap, err := r.buildAppDependencyList(context.TODO(), cc.appSet, cc.apps)
+					assert.Equal(t, err, nil, "expected no errors, but errors occured")
+					assert.Equal(t, cc.expectedList, appDependencyList, "expected appDependencyList did not match actual")
+					assert.Equal(t, cc.expectedStepMap, appStepMap, "expected appStepMap did not match actual")
+				})
+			})
+		}
 	}
 }
 
@@ -2902,27 +2968,32 @@ func TestBuildAppSyncMap(t *testing.T) {
 			},
 		},
 	} {
+		for _, progressiveRolloutsEnabled := range []bool{true, false} {
+			name := fmt.Sprintf("%s (progressiveRolloutsEnabled=%v)", cc.name, progressiveRolloutsEnabled)
+			t.Run(name, func(t *testing.T) {
+				t.Run(name, func(t *testing.T) {
 
-		t.Run(cc.name, func(t *testing.T) {
+					kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
+					argoDBMock := dbmocks.ArgoDB{}
+					argoObjs := []runtime.Object{}
 
-			kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
-			argoDBMock := dbmocks.ArgoDB{}
-			argoObjs := []runtime.Object{}
+					r := ApplicationSetReconciler{
+						Client:                    client,
+						Scheme:                    scheme,
+						Recorder:                  record.NewFakeRecorder(1),
+						Generators:                map[string]generators.Generator{},
+						ArgoDB:                    &argoDBMock,
+						ArgoAppClientset:          appclientset.NewSimpleClientset(argoObjs...),
+						KubeClientset:             kubeclientset,
+						EnableProgressiveRollouts: progressiveRolloutsEnabled,
+					}
 
-			r := ApplicationSetReconciler{
-				Client:           client,
-				Scheme:           scheme,
-				Recorder:         record.NewFakeRecorder(1),
-				Generators:       map[string]generators.Generator{},
-				ArgoDB:           &argoDBMock,
-				ArgoAppClientset: appclientset.NewSimpleClientset(argoObjs...),
-				KubeClientset:    kubeclientset,
-			}
-
-			appSyncMap, err := r.buildAppSyncMap(context.TODO(), cc.appSet, cc.appDependencyList, cc.appHashMap, cc.appMap)
-			assert.Equal(t, err, nil, "expected no errors, but errors occured")
-			assert.Equal(t, cc.expectedMap, appSyncMap, "expected appSyncMap did not match actual")
-		})
+					appSyncMap, err := r.buildAppSyncMap(context.TODO(), cc.appSet, cc.appDependencyList, cc.appHashMap, cc.appMap)
+					assert.Equal(t, err, nil, "expected no errors, but errors occured")
+					assert.Equal(t, cc.expectedMap, appSyncMap, "expected appSyncMap did not match actual")
+				})
+			})
+		}
 	}
 }
 
@@ -3404,35 +3475,38 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 			},
 		},
 	} {
+		for _, progressiveRolloutsEnabled := range []bool{true, false} {
+			name := fmt.Sprintf("%s (progressiveRolloutsEnabled=%v)", cc.name, progressiveRolloutsEnabled)
+			t.Run(name, func(t *testing.T) {
 
-		t.Run(cc.name, func(t *testing.T) {
+				kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
+				argoDBMock := dbmocks.ArgoDB{}
+				argoObjs := []runtime.Object{}
 
-			kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
-			argoDBMock := dbmocks.ArgoDB{}
-			argoObjs := []runtime.Object{}
+				client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&cc.appSet).Build()
 
-			client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&cc.appSet).Build()
+				r := ApplicationSetReconciler{
+					Client:                    client,
+					Scheme:                    scheme,
+					Recorder:                  record.NewFakeRecorder(1),
+					Generators:                map[string]generators.Generator{},
+					ArgoDB:                    &argoDBMock,
+					ArgoAppClientset:          appclientset.NewSimpleClientset(argoObjs...),
+					KubeClientset:             kubeclientset,
+					EnableProgressiveRollouts: progressiveRolloutsEnabled,
+				}
 
-			r := ApplicationSetReconciler{
-				Client:           client,
-				Scheme:           scheme,
-				Recorder:         record.NewFakeRecorder(1),
-				Generators:       map[string]generators.Generator{},
-				ArgoDB:           &argoDBMock,
-				ArgoAppClientset: appclientset.NewSimpleClientset(argoObjs...),
-				KubeClientset:    kubeclientset,
-			}
+				appStatuses, err := r.updateApplicationSetApplicationStatus(context.TODO(), &cc.appSet, cc.apps, cc.appHashMap)
 
-			appStatuses, err := r.updateApplicationSetApplicationStatus(context.TODO(), &cc.appSet, cc.apps, cc.appHashMap)
+				// opt out of testing the LastTransitionTime is accurate
+				for i := range appStatuses {
+					appStatuses[i].LastTransitionTime = nil
+				}
 
-			// opt out of testing the LastTransitionTime is accurate
-			for i := range appStatuses {
-				appStatuses[i].LastTransitionTime = nil
-			}
-
-			assert.Equal(t, err, nil, "expected no errors, but errors occured")
-			assert.Equal(t, cc.expectedAppStatus, appStatuses, "expected appStatuses did not match actual")
-		})
+				assert.Equal(t, err, nil, "expected no errors, but errors occured")
+				assert.Equal(t, cc.expectedAppStatus, appStatuses, "expected appStatuses did not match actual")
+			})
+		}
 	}
 }
 
@@ -3984,34 +4058,37 @@ func TestUpdateApplicationSetApplicationStatusProgress(t *testing.T) {
 			},
 		},
 	} {
+		for _, progressiveRolloutsEnabled := range []bool{true, false} {
+			name := fmt.Sprintf("%s (progressiveRolloutsEnabled=%v)", cc.name, progressiveRolloutsEnabled)
+			t.Run(name, func(t *testing.T) {
 
-		t.Run(cc.name, func(t *testing.T) {
+				kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
+				argoDBMock := dbmocks.ArgoDB{}
+				argoObjs := []runtime.Object{}
 
-			kubeclientset := kubefake.NewSimpleClientset([]runtime.Object{}...)
-			argoDBMock := dbmocks.ArgoDB{}
-			argoObjs := []runtime.Object{}
+				client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&cc.appSet).Build()
 
-			client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&cc.appSet).Build()
+				r := ApplicationSetReconciler{
+					Client:                    client,
+					Scheme:                    scheme,
+					Recorder:                  record.NewFakeRecorder(1),
+					Generators:                map[string]generators.Generator{},
+					ArgoDB:                    &argoDBMock,
+					ArgoAppClientset:          appclientset.NewSimpleClientset(argoObjs...),
+					KubeClientset:             kubeclientset,
+					EnableProgressiveRollouts: progressiveRolloutsEnabled,
+				}
 
-			r := ApplicationSetReconciler{
-				Client:           client,
-				Scheme:           scheme,
-				Recorder:         record.NewFakeRecorder(1),
-				Generators:       map[string]generators.Generator{},
-				ArgoDB:           &argoDBMock,
-				ArgoAppClientset: appclientset.NewSimpleClientset(argoObjs...),
-				KubeClientset:    kubeclientset,
-			}
+				appStatuses, err := r.updateApplicationSetApplicationStatusProgress(context.TODO(), &cc.appSet, cc.appSyncMap, cc.appStepMap, cc.appHashMap, cc.appMap)
 
-			appStatuses, err := r.updateApplicationSetApplicationStatusProgress(context.TODO(), &cc.appSet, cc.appSyncMap, cc.appStepMap, cc.appHashMap, cc.appMap)
+				// opt out of testing the LastTransitionTime is accurate
+				for i := range appStatuses {
+					appStatuses[i].LastTransitionTime = nil
+				}
 
-			// opt out of testing the LastTransitionTime is accurate
-			for i := range appStatuses {
-				appStatuses[i].LastTransitionTime = nil
-			}
-
-			assert.Equal(t, err, nil, "expected no errors, but errors occured")
-			assert.Equal(t, cc.expectedAppStatus, appStatuses, "expected appStatuses did not match actual")
-		})
+				assert.Equal(t, err, nil, "expected no errors, but errors occured")
+				assert.Equal(t, cc.expectedAppStatus, appStatuses, "expected appStatuses did not match actual")
+			})
+		}
 	}
 }
