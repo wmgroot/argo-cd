@@ -151,11 +151,11 @@ func (r *ApplicationSetReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	appSyncMap := map[string]bool{}
 	appMap := map[string]argov1alpha1.Application{}
 
-	if r.EnableProgressiveRollouts && applicationSetInfo.Spec.Strategy != nil {
+	if r.EnableProgressiveRollouts && applicationSetInfo.StrategyEnabled() {
 		appHashMap := map[string]string{}
 		for _, app := range applications {
 			appMap[app.Name] = app
-			hash, err := hashApplicaton(app)
+			hash, err := hashApplication(app)
 			if err != nil {
 				log.Warnf("could not compute a hash value for Application '%v', will have to assume that the Application had changes", app.Name)
 			}
@@ -167,12 +167,12 @@ func (r *ApplicationSetReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return ctrl.Result{}, err
 		}
 
-		appDependencyList, appStepMap, err := r.buildAppDependencyList(ctx, applicationSetInfo, desiredApplications)
+		appDependencyList, appStepMap, err := r.buildAppDependencyList(applicationSetInfo, desiredApplications)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 
-		appSyncMap, err = r.buildAppSyncMap(ctx, applicationSetInfo, appDependencyList, appHashMap, appMap)
+		appSyncMap, err = r.buildAppSyncMap(applicationSetInfo, appDependencyList, appHashMap, appMap)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -216,41 +216,38 @@ func (r *ApplicationSetReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		)
 	}
 
-	if r.EnableProgressiveRollouts {
-
+	if r.EnableProgressiveRollouts && applicationSetInfo.StrategyEnabled() {
 		// filter down valid applications if rollout strategy is enabled
 		strategy := applicationSetInfo.Spec.Strategy
-		if strategy != nil {
 
-			var rolloutApps []argov1alpha1.Application
-			if strategy.Type == "RollingUpdate" {
-				for i := range validApps {
-					// check appSyncMap to determine which Applications are ready to be updated and which should be skipped
-					if !appSyncMap[validApps[i].Name] {
-						log.Infof("skipping application generation, waiting for previous rollouts to complete before updating: %v", validApps[i].Name)
-						continue
-					}
-					rolloutApps = append(rolloutApps, validApps[i])
+		var rolloutApps []argov1alpha1.Application
+		if strategy.Type == "RollingUpdate" {
+			for i := range validApps {
+				// check appSyncMap to determine which Applications are ready to be updated and which should be skipped
+				if !appSyncMap[validApps[i].Name] {
+					log.Infof("skipping application generation, waiting for previous rollouts to complete before updating: %v", validApps[i].Name)
+					continue
 				}
-			} else if strategy.Type == "RollingSync" {
-				for i := range validApps {
-					// ensure that Applications generated with RollingSync do not have an automated sync policy, since the AppSet controller will handle this instead
-					if validApps[i].Spec.SyncPolicy != nil && validApps[i].Spec.SyncPolicy.Automated != nil {
-						validApps[i].Spec.SyncPolicy.Automated = nil
-						log.Warnf("application %v has an automated sync policy, this is disabled when using the RollingSync strategy", validApps[i].Name)
-					}
-
-					log.Infof("sync for application?: %v, sync: %v, status: %v", validApps[i].Name, appSyncMap[validApps[i].Name], appMap[validApps[i].Name].Status.Sync.Status)
-					// check appSyncMap to determine which Applications are ready to be updated and which should be skipped
-					if appSyncMap[validApps[i].Name] && appMap[validApps[i].Name].Status.Sync.Status == "OutOfSync" {
-						log.Infof("triggering sync for application: %v", validApps[i].Name)
-						validApps[i], _ = syncApplication(validApps[i])
-					}
-					rolloutApps = append(rolloutApps, validApps[i])
-				}
+				rolloutApps = append(rolloutApps, validApps[i])
 			}
-			validApps = rolloutApps
+		} else if strategy.Type == "RollingSync" {
+			for i := range validApps {
+				// ensure that Applications generated with RollingSync do not have an automated sync policy, since the AppSet controller will handle this instead
+				if validApps[i].Spec.SyncPolicy != nil && validApps[i].Spec.SyncPolicy.Automated != nil {
+					validApps[i].Spec.SyncPolicy.Automated = nil
+					log.Warnf("application %v has an automated sync policy, this is disabled when using the RollingSync strategy", validApps[i].Name)
+				}
+
+				log.Infof("sync for application?: %v, sync: %v, status: %v", validApps[i].Name, appSyncMap[validApps[i].Name], appMap[validApps[i].Name].Status.Sync.Status)
+				// check appSyncMap to determine which Applications are ready to be updated and which should be skipped
+				if appSyncMap[validApps[i].Name] && appMap[validApps[i].Name].Status.Sync.Status == "OutOfSync" {
+					log.Infof("triggering sync for application: %v", validApps[i].Name)
+					validApps[i], _ = syncApplication(validApps[i])
+				}
+				rolloutApps = append(rolloutApps, validApps[i])
+			}
 		}
+		validApps = rolloutApps
 	}
 
 	if r.Policy.Update() {
@@ -907,7 +904,7 @@ func (r *ApplicationSetReconciler) removeFinalizerOnInvalidDestination(ctx conte
 }
 
 // computes a deterministic hash representing the Application spec
-func hashApplicaton(application argov1alpha1.Application) (string, error) {
+func hashApplication(application argov1alpha1.Application) (string, error) {
 	// ensure that the status and other dynamic fields are not included in the hash
 	appToHash := argov1alpha1.Application{}
 	appToHash.Annotations = application.Annotations
@@ -927,18 +924,13 @@ func hashApplicaton(application argov1alpha1.Application) (string, error) {
 }
 
 // this list tracks which Applications belong to each RollingUpdate step
-func (r *ApplicationSetReconciler) buildAppDependencyList(ctx context.Context, applicationSet argov1alpha1.ApplicationSet, applications []argov1alpha1.Application) ([][]string, map[string]int, error) {
+func (r *ApplicationSetReconciler) buildAppDependencyList(applicationSet argov1alpha1.ApplicationSet, applications []argov1alpha1.Application) ([][]string, map[string]int, error) {
 
-	if applicationSet.Spec.Strategy == nil || (applicationSet.Spec.Strategy.RollingUpdate == nil && applicationSet.Spec.Strategy.RollingSync == nil) {
+	if !applicationSet.StrategyEnabled() {
 		return [][]string{}, map[string]int{}, nil
 	}
 
-	steps := []argov1alpha1.ApplicationSetRolloutStep{}
-	if applicationSet.Spec.Strategy.Type == "RollingUpdate" {
-		steps = applicationSet.Spec.Strategy.RollingUpdate.Steps
-	} else if applicationSet.Spec.Strategy.Type == "RollingSync" {
-		steps = applicationSet.Spec.Strategy.RollingSync.Steps
-	}
+	steps := applicationSet.Spec.Strategy.GetRolloutSteps()
 
 	appDependencyList := make([][]string, 0)
 	for range steps {
@@ -996,7 +988,7 @@ func (r *ApplicationSetReconciler) buildAppDependencyList(ctx context.Context, a
 }
 
 // this map is used to determine which stage of Applications are ready to be updated in the reconciler loop
-func (r *ApplicationSetReconciler) buildAppSyncMap(ctx context.Context, applicationSet argov1alpha1.ApplicationSet, appDependencyList [][]string, appHashMap map[string]string, appMap map[string]argov1alpha1.Application) (map[string]bool, error) {
+func (r *ApplicationSetReconciler) buildAppSyncMap(applicationSet argov1alpha1.ApplicationSet, appDependencyList [][]string, appHashMap map[string]string, appMap map[string]argov1alpha1.Application) (map[string]bool, error) {
 	appSyncMap := map[string]bool{}
 	syncEnabled := true
 
@@ -1129,67 +1121,21 @@ func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatus(ctx con
 func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusProgress(ctx context.Context, applicationSet *argov1alpha1.ApplicationSet, appSyncMap map[string]bool, appStepMap map[string]int, appHashMap map[string]string, appMap map[string]argov1alpha1.Application) ([]argov1alpha1.ApplicationSetApplicationStatus, error) {
 	now := metav1.Now()
 
-	appStatuses := make([]argov1alpha1.ApplicationSetApplicationStatus, 0, len(applicationSet.Status.ApplicationStatus))
+	oldAppStatuses := applicationSet.Status.ApplicationStatus
+	updatedAppStatuses := make([]argov1alpha1.ApplicationSetApplicationStatus, 0, len(oldAppStatuses))
+
+	strategy := applicationSet.Spec.Strategy
 
 	// if we have no RollingUpdate steps, clear out the existing ApplicationStatus entries
-	if applicationSet.Spec.Strategy != nil && (applicationSet.Spec.Strategy.RollingUpdate != nil || applicationSet.Spec.Strategy.RollingSync != nil) {
-		updateCountMap := []int{}
-		totalCountMap := []int{}
+	if applicationSet.StrategyEnabled() {
+		updateCountMap, totalCountMap := getPendingAndProgressingCounts(*strategy, oldAppStatuses, appStepMap, appHashMap, appMap)
 
-		length := 0
-		if applicationSet.Spec.Strategy.Type == "RollingUpdate" {
-			length = len(applicationSet.Spec.Strategy.RollingUpdate.Steps)
-		} else {
-			length = len(applicationSet.Spec.Strategy.RollingSync.Steps)
-		}
-		for s := 0; s < length; s++ {
-			updateCountMap = append(updateCountMap, 0)
-			totalCountMap = append(totalCountMap, 0)
-		}
-
-		// populate updateCountMap with counts of existing Pending and Progressing Applications
-		for _, appStatus := range applicationSet.Status.ApplicationStatus {
-			totalCountMap[appStepMap[appStatus.Application]] += 1
-
-			appOutdated := false
-			if applicationSet.Spec.Strategy.Type == "RollingUpdate" {
-				appOutdated = appHashMap[appStatus.Application] != appStatus.ObservedHash || appHashMap[appStatus.Application] == ""
-			} else if applicationSet.Spec.Strategy.Type == "RollingSync" {
-				appOutdated = appMap[appStatus.Application].Status.Sync.Status == "OutOfSync"
-			}
-			if appOutdated && (appStatus.Status == "Pending" || appStatus.Status == "Progressing") {
-				updateCountMap[appStepMap[appStatus.Application]] += 1
-			}
-		}
-
-		for _, appStatus := range applicationSet.Status.ApplicationStatus {
-
-			maxUpdateAllowed := true
-			maxUpdate := &intstr.IntOrString{}
-			if applicationSet.Spec.Strategy.Type == "RollingUpdate" {
-				maxUpdate = applicationSet.Spec.Strategy.RollingUpdate.Steps[appStepMap[appStatus.Application]].MaxUpdate
-			} else if applicationSet.Spec.Strategy.Type == "RollingSync" {
-				maxUpdate = applicationSet.Spec.Strategy.RollingSync.Steps[appStepMap[appStatus.Application]].MaxUpdate
-			}
-
-			// allow any updates if maxUpdate is unset or explicitly 0
-			if maxUpdate != nil && !(maxUpdate.Type == intstr.Int && maxUpdate.IntVal == 0) {
-				maxUpdateVal, err := intstr.GetScaledValueFromIntOrPercent(maxUpdate, totalCountMap[appStepMap[appStatus.Application]], false)
-				if err != nil {
-					log.Warnf("AppSet '%v' has a invalid maxUpdate value '%+v', ignoring maxUpdate logic for this step: %v", applicationSet.Name, maxUpdate, err)
-				}
-
-				// ensure non-zero values always floor to 1, even while rounding down
-				if maxUpdateVal == 0 {
-					maxUpdateVal = 1
-				}
-
-				if updateCountMap[appStepMap[appStatus.Application]] >= maxUpdateVal {
-					maxUpdateAllowed = false
-				}
-			}
-
-			// log.Infof("statusProgress - %v, status: %v, sync: %v, maxUpdate: %v", appStatus.Application, appStatus.Status, appSyncMap[appStatus.Application], maxUpdateAllowed)
+		for _, appStatus := range oldAppStatuses {
+			step := appStepMap[appStatus.Application]
+			maxUpdate := strategy.GetMaxUpdateForStep(step)
+			totalAllowed := totalCountMap[step]
+			currentlyUpdating := updateCountMap[step]
+			maxUpdateAllowed := isMaxUpdateAllowed(applicationSet.Name, maxUpdate, totalAllowed, currentlyUpdating)
 
 			if appStatus.Status == "Waiting" && appSyncMap[appStatus.Application] && maxUpdateAllowed {
 				log.Infof("Application %v moved to Pending status, watching for the Application to start Progressing", appStatus.Application)
@@ -1198,19 +1144,69 @@ func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusProgress
 				appStatus.ObservedHash = appHashMap[appStatus.Application]
 				appStatus.Message = "Application moved to Pending status, watching for the Application resource to start Progressing."
 
-				updateCountMap[appStepMap[appStatus.Application]] += 1
+				updateCountMap[step] += 1
 			}
 
-			appStatuses = append(appStatuses, appStatus)
+			updatedAppStatuses = append(updatedAppStatuses, appStatus)
 		}
 	}
 
-	err := r.setApplicationSetApplicationStatus(ctx, applicationSet, appStatuses)
+	err := r.setApplicationSetApplicationStatus(ctx, applicationSet, updatedAppStatuses)
 	if err != nil {
 		return nil, err
 	}
 
-	return appStatuses, nil
+	return updatedAppStatuses, nil
+}
+
+// isMaxUpdateAllowed determines whether an update is currently allowed for a given step.
+func isMaxUpdateAllowed(applicationSetName string, maxUpdate *intstr.IntOrString, totalAllowed int, currentlyUpdating int) bool {
+	allowed := true
+
+	// allow any updates if maxUpdate is unset or explicitly 0
+	if maxUpdate != nil && !(maxUpdate.Type == intstr.Int && maxUpdate.IntVal == 0) {
+		maxUpdateVal, err := intstr.GetScaledValueFromIntOrPercent(maxUpdate, totalAllowed, false)
+		if err != nil {
+			log.Warnf("AppSet '%v' has a invalid maxUpdate value '%+v', ignoring maxUpdate logic for this step: %v", applicationSetName, maxUpdate, err)
+		}
+
+		// ensure non-zero values always floor to 1, even while rounding down
+		if maxUpdateVal == 0 {
+			maxUpdateVal = 1
+		}
+
+		if currentlyUpdating >= maxUpdateVal {
+			allowed = false
+		}
+	}
+	return allowed
+}
+
+func getPendingAndProgressingCounts(strategy argov1alpha1.ApplicationSetStrategy, oldAppStatuses []argov1alpha1.ApplicationSetApplicationStatus, appStepMap map[string]int, appHashMap map[string]string, appMap map[string]argov1alpha1.Application) ([]int, []int) {
+	var updateCountMap []int
+	var totalCountMap []int
+
+	for s := 0; s < len(strategy.GetRolloutSteps()); s++ {
+		updateCountMap = append(updateCountMap, 0)
+		totalCountMap = append(totalCountMap, 0)
+	}
+
+	// populate updateCountMap with counts of existing Pending and Progressing Applications
+	for _, appStatus := range oldAppStatuses {
+		totalCountMap[appStepMap[appStatus.Application]] += 1
+
+		appOutdated := false
+		if strategy.Type == "RollingUpdate" {
+			appOutdated = appHashMap[appStatus.Application] != appStatus.ObservedHash || appHashMap[appStatus.Application] == ""
+		} else if strategy.Type == "RollingSync" {
+			appOutdated = appMap[appStatus.Application].Status.Sync.Status == "OutOfSync"
+		}
+		if appOutdated && (appStatus.Status == "Pending" || appStatus.Status == "Progressing") {
+			updateCountMap[appStepMap[appStatus.Application]] += 1
+		}
+	}
+
+	return updateCountMap, totalCountMap
 }
 
 func (r *ApplicationSetReconciler) updateApplicationSetApplicationStatusConditions(ctx context.Context, applicationSet *argov1alpha1.ApplicationSet) ([]argov1alpha1.ApplicationSetCondition, error) {
