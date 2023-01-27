@@ -3939,6 +3939,120 @@ func TestUpdateApplicationSetApplicationStatus(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "progresses a pending application with a successful sync to progressing",
+			appSet: argov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type:        "RollingSync",
+						RollingSync: &argov1alpha1.ApplicationSetRolloutStrategy{},
+					},
+				},
+				Status: argov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application: "app1",
+							LastTransitionTime: &metav1.Time{
+								Time: time.Now().Add(time.Duration(-1) * time.Minute),
+							},
+							Message: "",
+							Status:  "Pending",
+							Step:    "1",
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app1",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Health: argov1alpha1.HealthStatus{
+							Status: health.HealthStatusDegraded,
+						},
+						OperationState: &argov1alpha1.OperationState{
+							Phase: common.OperationSucceeded,
+							StartedAt: metav1.Time{
+								Time: time.Now(),
+							},
+						},
+						Sync: argov1alpha1.SyncStatus{
+							Status: argov1alpha1.SyncStatusCodeSynced,
+						},
+					},
+				},
+			},
+			expectedAppStatus: []argov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application: "app1",
+					Message:     "Application resource completed a sync successfully, updating status from Pending to Progressing.",
+					Status:      "Progressing",
+					Step:        "1",
+				},
+			},
+		},
+		{
+			name: "does not progresses a pending application with an old successful sync to progressing",
+			appSet: argov1alpha1.ApplicationSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "argocd",
+				},
+				Spec: argov1alpha1.ApplicationSetSpec{
+					Strategy: &argov1alpha1.ApplicationSetStrategy{
+						Type:        "RollingSync",
+						RollingSync: &argov1alpha1.ApplicationSetRolloutStrategy{},
+					},
+				},
+				Status: argov1alpha1.ApplicationSetStatus{
+					ApplicationStatus: []argov1alpha1.ApplicationSetApplicationStatus{
+						{
+							Application: "app1",
+							LastTransitionTime: &metav1.Time{
+								Time: time.Now().Add(time.Duration(-1) * time.Minute),
+							},
+							Message: "Application moved to Pending status, watching for the Application resource to start Progressing.",
+							Status:  "Pending",
+							Step:    "1",
+						},
+					},
+				},
+			},
+			apps: []argov1alpha1.Application{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "app1",
+					},
+					Status: argov1alpha1.ApplicationStatus{
+						Health: argov1alpha1.HealthStatus{
+							Status: health.HealthStatusDegraded,
+						},
+						OperationState: &argov1alpha1.OperationState{
+							Phase: common.OperationSucceeded,
+							StartedAt: metav1.Time{
+								Time: time.Now().Add(time.Duration(-2) * time.Minute),
+							},
+						},
+						Sync: argov1alpha1.SyncStatus{
+							Status: argov1alpha1.SyncStatusCodeSynced,
+						},
+					},
+				},
+			},
+			expectedAppStatus: []argov1alpha1.ApplicationSetApplicationStatus{
+				{
+					Application: "app1",
+					Message:     "Application moved to Pending status, watching for the Application resource to start Progressing.",
+					Status:      "Pending",
+					Step:        "1",
+				},
+			},
+		},
 	} {
 
 		t.Run(cc.name, func(t *testing.T) {
